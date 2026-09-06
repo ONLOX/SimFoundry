@@ -10,7 +10,7 @@
 #       s1_video/frames_subsampled_<N>/  (672x384) + s1_video/input_video.mp4
 #       s2_da/da/exports/npz/results.npz (orig-DA3, <N> frames, DA3 backend)
 #       s4_frame/image_<N>_cam2world.npy
-#       s14_og/reconstructed_og_scene.json
+#       s14_og/reconstructed_og_scene.json  (required by full/assemble, not export)
 #   Canonical splat-prep command (run BEFORE this script):
 #       OMNIGIBSON_HEADLESS=1 scripts/pipeline/A_reconstruction/run.sh \
 #         --scene-name <scene> --video-fpath <video> --no-stream -- \
@@ -23,11 +23,12 @@
 # re-run stages 3-14. It runs:
 #   Steps 1-4 — background ingest: stage VOID input (symlink canonical frames + video) ->
 #             quadmask -> VOID Pass 1/2 chunked -> void-DA3 @ res448 -> seed PLY.
-#   Steps 5-7 — splat (splatfacto-big + SO3xR3) -> bridge to OG world -> build assets.
+#   Steps 5-7 — splat -> bridge -> portable USDZ export; full/assemble also build assets.
 #
 # Usage:
 #   scripts/pipeline/A_reconstruction/stages/auto_bg_reconstruction/run_auto_align.sh <scene_name> <video_path> \
-#       [--clean] [--num-frames 400] [--floor-category 'desk, table, or counter']
+#       [--mode full|export|assemble] [--clean] [--num-frames 400] \
+#       [--floor-category 'desk, table, or counter']
 #   (<video_path> is used only for the precondition guidance message.)
 # Example:
 #   scripts/pipeline/A_reconstruction/stages/auto_bg_reconstruction/run_auto_align.sh quillen_table_2 \
@@ -37,32 +38,46 @@ set -euo pipefail
 
 # ---------- args ----------
 if [[ $# -lt 2 ]]; then
-    echo "usage: $0 <scene_name> <video_path> [--clean] [--num-frames N] [--floor-category 'desk, table, or counter']"
+    echo "usage: $0 <scene_name> <video_path> [--mode full|export|assemble] [--clean] [--num-frames N] [--env-simfoundry NAME] [--env-da3 NAME] [--env-void NAME] [--env-nerfstudio NAME] [--env-3dgrut NAME] [--floor-category TEXT]"
     exit 1
 fi
 SCENE="$1"; shift
 VIDEO="$1"; shift
 CLEAN=0
+MODE="full"
 NUM_FRAMES=400
 FLOOR_CATEGORY="desk, table, or counter"
+SIMFOUNDRY_ENV="simfoundry"
+DA3_ENV="da3"
+VOID_ENV_NAME="void"
+NERFSTUDIO_ENV_NAME="nerfstudio_simfoundry"
+THREEDGRUT_ENV_NAME="3dgrut"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --clean) CLEAN=1; shift ;;
+        --mode) MODE="$2"; shift 2 ;;
         --num-frames) NUM_FRAMES="$2"; shift 2 ;;
+        --env-simfoundry) SIMFOUNDRY_ENV="$2"; shift 2 ;;
+        --env-da3) DA3_ENV="$2"; shift 2 ;;
+        --env-void) VOID_ENV_NAME="$2"; shift 2 ;;
+        --env-nerfstudio) NERFSTUDIO_ENV_NAME="$2"; shift 2 ;;
+        --env-3dgrut) THREEDGRUT_ENV_NAME="$2"; shift 2 ;;
         --floor-category) FLOOR_CATEGORY="$2"; shift 2 ;;
         *) echo "unknown arg: $1"; exit 1 ;;
     esac
 done
+case "$MODE" in
+    full|export|assemble) ;;
+    *) echo "--mode must be one of: full, export, assemble" >&2; exit 2 ;;
+esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
 DATA_DIR="${REPO_ROOT}/Data/${SCENE}"
 ASSETS_DIR="${REPO_ROOT}/assets/scenes/${SCENE}"
 LOG_DIR="${DATA_DIR}/_logs"
 
-# Mamba env names — flip if your install uses different names. (Foreground-stage envs
-# hunyuan/any6d are not needed: stages 3-14 belong to the canonical reconstruction.)
-SIMFOUNDRY_ENV="simfoundry"
-DA3_ENV="da3"
+# Nested VOID and Nerfstudio subprocesses read these names from the environment.
+export VOID_ENV_NAME NERFSTUDIO_ENV_NAME
 
 # VIDEO is used only for the precondition guidance message; it need not still exist.
 [[ -f "$VIDEO" ]] || echo "[orchestrator] note: video '$VIDEO' not found (only used for the guidance message)"
@@ -70,10 +85,14 @@ DA3_ENV="da3"
 cd "$REPO_ROOT"
 
 if [[ "$CLEAN" -eq 1 ]]; then
-    # Background-only: clean ONLY the auto_bg-owned outputs. The canonical
-    # reconstruction (s1_video / s2_da / s3-s14) is a precondition and is preserved.
-    echo "[orchestrator] --clean: removing $DATA_DIR/auto_bg and $ASSETS_DIR"
-    rm -rf "$DATA_DIR/auto_bg" "$ASSETS_DIR"
+    if [[ "$MODE" == "assemble" ]]; then
+        echo "[orchestrator] --clean assemble: removing $ASSETS_DIR"
+        rm -rf "$ASSETS_DIR"
+    else
+        # Preserve the canonical reconstruction in every mode.
+        echo "[orchestrator] --clean: removing $DATA_DIR/auto_bg and $ASSETS_DIR"
+        rm -rf "$DATA_DIR/auto_bg" "$ASSETS_DIR"
+    fi
 fi
 mkdir -p "$LOG_DIR"
 
@@ -147,6 +166,9 @@ S1_VIDEO_MP4="${DATA_DIR}/s1_video/input_video.mp4"
 S2_DA_NPZ="${DATA_DIR}/s2_da/da/exports/npz/results.npz"
 S4_FRAME_DIR="${DATA_DIR}/s4_frame"
 S14_OG_JSON="${DATA_DIR}/s14_og/reconstructed_og_scene.json"
+BG_EXPORT_DIR="${DATA_DIR}/auto_bg/export"
+BG_USDZ="${BG_EXPORT_DIR}/gs_auto.usdz"
+BG_POSE_JSON="${BG_EXPORT_DIR}/gs_auto.pose.json"
 
 precondition_fail() {
     echo "[orchestrator] PRECONDITION FAILED: $1" >&2
@@ -166,10 +188,27 @@ EOF
     exit 1
 }
 
+if [[ "$MODE" == "assemble" ]]; then
+    [[ -f "$S14_OG_JSON" ]] || precondition_fail "missing OG scene state: $S14_OG_JSON (canonical stage 14)"
+    [[ -f "$BG_USDZ" ]] || precondition_fail "missing exported background USDZ: $BG_USDZ"
+    [[ -f "$BG_POSE_JSON" ]] || precondition_fail "missing exported background pose: $BG_POSE_JSON"
+    run "7 assemble_assets" "$SIMFOUNDRY_ENV" -- \
+        python scripts/pipeline/A_reconstruction/stages/auto_bg_reconstruction/7_build_og_scene_assets.py \
+            scene_name="${SCENE}" \
+            s7_build_assets.bg_usdz="${BG_USDZ}" \
+            s7_build_assets.bg_pose_json="${BG_POSE_JSON}"
+    FINAL_JSON="${ASSETS_DIR}/${SCENE}_scene_state_auto_bg.json"
+    [[ -f "$FINAL_JSON" ]] || precondition_fail "assembly did not produce $FINAL_JSON"
+    echo "[orchestrator] SUCCESS: assembled scene state $FINAL_JSON"
+    exit 0
+fi
+
 [[ -f "$S2_DA_NPZ" ]]    || precondition_fail "missing orig-DA3 npz: $S2_DA_NPZ"
 [[ -f "$S1_VIDEO_MP4" ]] || precondition_fail "missing $S1_VIDEO_MP4 (canonical run must use s1_video.splat_prep=true)"
 [[ -d "$S1_FRAMES_DIR" ]] || precondition_fail "missing frames dir: $S1_FRAMES_DIR"
-[[ -f "$S14_OG_JSON" ]]  || precondition_fail "missing OG scene state: $S14_OG_JSON (canonical stage 14)"
+if [[ "$MODE" == "full" ]]; then
+    [[ -f "$S14_OG_JSON" ]] || precondition_fail "missing OG scene state: $S14_OG_JSON (canonical stage 14)"
+fi
 ls "${S4_FRAME_DIR}"/image_*_cam2world.npy >/dev/null 2>&1 \
     || precondition_fail "missing s4_frame/image_<N>_cam2world.npy (canonical stage 4)"
 
@@ -271,9 +310,23 @@ run "6 bridge_to_og" "$SIMFOUNDRY_ENV" -- \
     python scripts/pipeline/A_reconstruction/stages/auto_bg_reconstruction/6_bridge_bg_splat_to_og.py \
         scene_name="${SCENE}"
 
+run "7a export_bg_usdz" "$SIMFOUNDRY_ENV" -- \
+    python scripts/pipeline/A_reconstruction/stages/auto_bg_reconstruction/7a_export_bg_usdz.py \
+        --scene-name "${SCENE}" \
+        --env-3dgrut "${THREEDGRUT_ENV_NAME}"
+[[ -f "$BG_USDZ" ]] || precondition_fail "background export did not produce $BG_USDZ"
+[[ -f "$BG_POSE_JSON" ]] || precondition_fail "background export did not produce $BG_POSE_JSON"
+
+if [[ "$MODE" == "export" ]]; then
+    echo "[orchestrator] SUCCESS: portable background $BG_USDZ"
+    exit 0
+fi
+
 run "7 build_assets" "$SIMFOUNDRY_ENV" -- \
     python scripts/pipeline/A_reconstruction/stages/auto_bg_reconstruction/7_build_og_scene_assets.py \
-        scene_name="${SCENE}"
+        scene_name="${SCENE}" \
+        s7_build_assets.bg_usdz="${BG_USDZ}" \
+        s7_build_assets.bg_pose_json="${BG_POSE_JSON}"
 
 # ---------- final output ----------
 FINAL_JSON="${ASSETS_DIR}/${SCENE}_scene_state_auto_bg.json"

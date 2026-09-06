@@ -13,6 +13,8 @@ Inputs:
                                 The PLY is in DA3 world; the bridge's pose
                                 sidecar (`<bg_ply>.pose.json`) carries the
                                 rigid transform to OG world.
+  - Or a prebuilt BG USDZ and explicit pose sidecar, supplied with
+    `s7_build_assets.bg_usdz` and `s7_build_assets.bg_pose_json`.
 
 Outputs:
   - assets/scenes/<scene>/objects/<cat>/<model>/{usd,material,misc}/...
@@ -24,9 +26,7 @@ What this script does:
   2. For each `DatasetObject` entry, copy (or symlink) the dataset object tree
      under assets/scenes/<scene>/objects/ and rewrite the init_info entry to
      `USDObject` with an explicit absolute `usd_path`.
-  3. Convert the BG splat PLY to a USDZ via ply_to_usdz()
-     (which shells out to the 3dgrut env), installed as
-     objects/gs_background/gs_auto.usdz.
+  3. Install a prebuilt USDZ, or convert the BG PLY through the 3DGRUT env.
   4. Inject the `gs_background` USDObject (fixed_base, visual_only) and its
      `root_link` state. If `<bg_ply>.pose.json` exists next to the splat
      (written by bridge_bg_splat_to_og.py), apply that pose onto the prim
@@ -46,15 +46,18 @@ import copy
 import hashlib
 import json
 import logging
-import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 import hydra
 
 from simfoundry.pipeline.stage_utils import bootstrap_hydra_workdir
+from simfoundry.pipeline.background_bundle import (
+    load_bg_pose_sidecar,
+    materialize_bg_usdz,
+    pose_sidecar_for_ply,
+)
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -64,36 +67,6 @@ REPO_ROOT = Path(__file__).resolve().parents[5]
 
 bootstrap_hydra_workdir(__file__)
 from simfoundry import CFG_DIR  # noqa: E402
-
-THREEDGRUT_ENV_NAME = "3dgrut"  # must exist in `mamba env list`
-
-
-def ply_to_usdz(in_ply: Path, out_usdz: Path) -> None:
-    """Convert a Gaussian-splat PLY to a USDZ readable by OmniGibson (via the 3dgrut env)."""
-    cmd = [
-        "mamba", "run", "-n", THREEDGRUT_ENV_NAME, "python",
-        str(REPO_ROOT / "deps" / "3dgrut" / "threedgrut" / "export" / "scripts" / "ply_to_usd.py"),
-        str(in_ply),
-        "--output_file", str(out_usdz),
-    ]
-    # 3dgut JIT-compiles a CUDA plugin (lib3dgut_cc); ninja must be on PATH, and it lives in
-    # the 3dgrut env. `mamba run -n 3dgrut` puts that env's bin on PATH automatically and
-    # re-applies the env's persisted build vars (CC, CXX, TORCH_CUDA_ARCH_LIST), so we strip
-    # the simfoundry-leaked compiler/flag vars here to avoid them interfering with that.
-    # The 3dgrut env (created by scripts/create_conda.sh, CUDA 12.8) ships torch 2.8.0+cu128,
-    # which DOES recognize sm_120 — include 12.0 so the JIT plugin has RTX 5090 / Blackwell
-    # kernels (omitting it gives "no kernel image is available" at render time).
-    env = os.environ.copy()
-    env["TORCH_CUDA_ARCH_LIST"] = "7.5;8.0;8.6;9.0;10.0;12.0+PTX"
-    for k in ("NVCC_PREPEND_FLAGS", "NVCC_APPEND_FLAGS",
-              "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS",
-              "CC", "CXX", "CC_FOR_BUILD", "CXX_FOR_BUILD",
-              "GCC", "GCC_AR", "GCC_NM", "GCC_RANLIB", "CXXFILT",
-              "CUDAARCHS", "CMAKE_ARGS", "CUDA_HOME"):
-        env.pop(k, None)
-    logger.info("ply_to_usdz: %s", " ".join(cmd))
-    subprocess.run(cmd, check=True, env=env)
-
 
 REF_SCENE_STATE = REPO_ROOT / "assets" / "scenes" / "nv_desk" / "nv_desk_scene_state_auto_bg.json"
 
@@ -118,19 +91,11 @@ def _copy_asset_tree(src_dir: Path, dst_dir: Path) -> None:
 
 
 def _resolve_dataset_obj_dir(dataset_name: str, category: str, model: str) -> Path:
-    # Stage 13 imports into custom-assets/, but stage-14 init_info still
-    # hardcodes dataset_name='real2sim-assets'. Prefer the newer USD when both
-    # datasets carry the same (category, model).
+    # Use exactly the dataset named by stage 14. Selecting a same-named model
+    # from another dataset can silently assemble a different asset than the one
+    # that was settled and serialized.
     datasets_root = REPO_ROOT / "deps" / "BEHAVIOR-1K" / "datasets"
-    primary = datasets_root / dataset_name / "objects" / category / model
-    alt = datasets_root / "custom-assets" / "objects" / category / model
-    if dataset_name != "custom-assets" and alt.exists():
-        primary_usd = primary / "usd" / f"{model}.usd"
-        alt_usd = alt / "usd" / f"{model}.usd"
-        if alt_usd.exists():
-            if not primary_usd.exists() or alt_usd.stat().st_mtime > primary_usd.stat().st_mtime:
-                return alt
-    return primary
+    return datasets_root / dataset_name / "objects" / category / model
 
 
 def _build_usdobject_entry(name: str, usd_path: Path, category: str, hash_hex: str) -> dict:
@@ -196,23 +161,11 @@ def _load_bg_pose_sidecar(bg_ply: Path) -> dict | None:
     The bridge writes this file when it leaves the PLY in its native trained frame
     and stores the OG-world transform as a prim pose instead of baking it in.
     """
-    sidecar = bg_ply.with_name(bg_ply.name + ".pose.json")
-    if not sidecar.exists():
-        return None
     try:
-        payload = json.loads(sidecar.read_text())
-    except json.JSONDecodeError as e:
-        logger.warning("Pose sidecar %s exists but is malformed (%s); ignoring.", sidecar, e)
+        return load_bg_pose_sidecar(pose_sidecar_for_ply(bg_ply))
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning("Pose sidecar for %s is invalid (%s); ignoring.", bg_ply, e)
         return None
-    if "pos" not in payload or "ori_xyzw" not in payload:
-        logger.warning("Pose sidecar %s missing pos/ori_xyzw; ignoring.", sidecar)
-        return None
-    return {
-        "pos": payload["pos"],
-        "ori_xyzw": payload["ori_xyzw"],
-        "scale": float(payload.get("scale", 1.0)),
-        "sidecar_path": sidecar,
-    }
 
 
 @hydra.main(config_name="auto_bg", config_path=CFG_DIR, version_base="1.3")
@@ -226,6 +179,8 @@ def main(cfg):
     scene_state = Path(sec.scene_state).resolve() if sec.scene_state else REPO_ROOT / "Data" / scene / "s14_og" / "reconstructed_og_scene.json"
     bg_ply = Path(sec.bg_splat_ply).resolve() if sec.bg_splat_ply else \
         REPO_ROOT / "Data" / scene / "auto_bg" / "splat" / "export" / f"{scene}_bg.ply"
+    prebuilt_usdz = Path(sec.bg_usdz).resolve() if sec.get("bg_usdz") else None
+    explicit_pose = Path(sec.bg_pose_json).resolve() if sec.get("bg_pose_json") else None
     # Resolve out_scene_dir to absolute so all usd_path entries in the written
     # scene state JSON are absolute too (OG resolves usd_path from CWD; relative
     # paths break unless the loader happens to start in the repo root).
@@ -281,20 +236,36 @@ def main(cfg):
         rewritten.append(name)
     logger.info("Rewrote %d DatasetObject entries -> USDObject: %s", len(rewritten), rewritten)
 
-    # 2. BG splat: PLY -> USDZ -> install
+    # 2. BG splat: install a prebuilt USDZ, or convert the local PLY.
     if not sec.skip_bg_splat:
-        if not bg_ply.exists():
-            sys.exit(f"missing BG splat PLY: {bg_ply}")
         gs_bg_dir = out_scene_dir / "objects" / "gs_background"
         gs_bg_dir.mkdir(parents=True, exist_ok=True)
         gs_usdz = gs_bg_dir / "gs_auto.usdz"
-        logger.info("Converting BG splat %s -> %s", bg_ply, gs_usdz)
-        ply_to_usdz(bg_ply, gs_usdz)
+        if prebuilt_usdz is not None:
+            try:
+                materialize_bg_usdz(gs_usdz, prebuilt_usdz=prebuilt_usdz)
+            except FileNotFoundError as e:
+                sys.exit(str(e))
+            logger.info("Installed prebuilt BG USDZ %s -> %s", prebuilt_usdz, gs_usdz)
+        else:
+            if not bg_ply.exists():
+                sys.exit(f"missing BG splat PLY: {bg_ply}")
+            logger.info("Converting BG splat %s -> %s", bg_ply, gs_usdz)
+            materialize_bg_usdz(gs_usdz, source_ply=bg_ply)
         if not gs_usdz.exists():
             sys.exit(f"BG splat USDZ failed to write: {gs_usdz}")
-        bg_pose = _load_bg_pose_sidecar(bg_ply)
+        if explicit_pose is not None and not explicit_pose.is_file():
+            sys.exit(f"missing explicit BG pose sidecar: {explicit_pose}")
+        try:
+            bg_pose = (
+                load_bg_pose_sidecar(explicit_pose)
+                if explicit_pose is not None
+                else _load_bg_pose_sidecar(bg_ply)
+            )
+        except (json.JSONDecodeError, ValueError) as e:
+            sys.exit(f"invalid BG pose sidecar: {e}")
         if bg_pose is None:
-            logger.info("No pose sidecar for %s; assuming PLY is pre-baked into OG world.", bg_ply.name)
+            logger.info("No BG pose sidecar; assuming the splat is pre-baked into OG world.")
             obj_init["gs_background"] = _build_gs_background_entry(gs_usdz, scale=1.0)
             obj_reg["gs_background"] = _build_gs_background_state()
         else:

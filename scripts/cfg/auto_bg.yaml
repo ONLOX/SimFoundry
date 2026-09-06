@@ -197,6 +197,8 @@ s7_build_assets:                                  # env: simfoundry — build_og
   rerun: true
   scene_state: "${root_dir}/${scene_name}/s14_og/reconstructed_og_scene.json"
   bg_splat_ply: "${s6_bridge.out_ply}"            # Sidecar auto-discovered at <bg_splat_ply>.pose.json
+  bg_usdz: null                                   # Prebuilt H20 export; skips PLY->USDZ on the simulation host
+  bg_pose_json: null                              # Explicit sidecar paired with bg_usdz
   out_scene_dir: "${assets_dir}/${scene_name}"
   out_state_name: "${scene_name}_scene_state_auto_bg.json"
   skip_bg_splat: false                            # If true, skip PLY->USDZ + gs_background injection
