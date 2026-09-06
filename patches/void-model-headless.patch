@@ -1,0 +1,13 @@
+diff --git a/inference/cogvideox_fun/make_warped_noise.py b/inference/cogvideox_fun/make_warped_noise.py
+index a84230f..fd780f0 100644
+--- a/inference/cogvideox_fun/make_warped_noise.py
++++ b/inference/cogvideox_fun/make_warped_noise.py
+@@ -77,7 +77,7 @@ def main(
+     output = nw.get_noise_from_video(
+         video,
+         remove_background=False, #Set this to True to matte the foreground - and force the background to have no flow
+-        visualize=True,          #Generates nice visualization videos and previews in Jupyter notebook
++        visualize=False,         #Headless pipeline does not need previews or their downloaded Google font
+         save_files=True,         #Set this to False if you just want the noises without saving to a numpy file
+         
+         noise_channels=16,

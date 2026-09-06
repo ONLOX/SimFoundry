@@ -22,6 +22,7 @@ from supervision import draw_rectangle
 import shutil
 
 from simfoundry.models.vlm import Gemini, Imagen3, FLUX1
+from simfoundry.models.qwen_image import QwenImage
 from simfoundry.models.sam_v3_gmask import SAM3
 from simfoundry.models.clip import CLIPEncoder
 from simfoundry.models.sbert import SBERTEncoder
@@ -511,6 +512,8 @@ REMOVAL_MODELS = {
     "gemini-2.5-flash-image",
     "gemini-3-pro-image",
     "flux",
+    "qwen-image-3.0",
+    "qwen-image-3.0-pro",
 }
 
 DETECTION_MODELS = {
@@ -890,6 +893,8 @@ def main(cfg):
             dtype=torch.bfloat16,
             device="cuda",
         )
+    elif removal_model_name in QwenImage.VERSIONS:
+        removal_model = QwenImage(model=removal_model_name)
     else:
         raise NotImplementedError
 
@@ -1018,6 +1023,16 @@ def main(cfg):
                 max_sequence_length=512,
                 **upsample_kwargs,
             ))
+        elif removal_model_name in QwenImage.VERSIONS:
+            result = removal_model(
+                image_path=source_resized_image_fpath,
+                size=resolution,
+                **upsample_kwargs,
+            )
+            images = removal_model.get_result_images(result)
+            if not images:
+                raise RuntimeError("Qwen Image returned no source upsample image")
+            upsampled_obj_img_raw = np.array(images[0])
         else:
             raise NotImplementedError
 
@@ -1415,9 +1430,13 @@ def main(cfg):
 
                 detection_iteration += 1
         else:
-            # Use hardcoded categories specified
-            obj_cat_list = [cat for cat in force_categories]
-            print(f"\n Using forced categories: {obj_cat_list}")
+            # Initialize once, then retain the remaining categories as objects are removed.
+            if obj_cat_list is None:
+                obj_cat_list = [cat for cat in force_categories]
+            if len(obj_cat_list) == 0:
+                logger.info("All forced categories have been removed.")
+                break
+            print(f"\n Using remaining forced categories: {obj_cat_list}")
             detection_iteration += 1
 
         # 2. Segment object instances / masks using SAM3 -> N objects detected to decompose
@@ -1838,6 +1857,17 @@ def main(cfg):
                         max_sequence_length=512,
                         **removal_kwargs,
                     ))
+                elif removal_model_name in QwenImage.VERSIONS:
+                    result = removal_model(
+                        image_path=annotated_removal_image_fpath,
+                        size=resolution,
+                        **removal_kwargs,
+                    )
+                    images = removal_model.get_result_images(result)
+                    if not images:
+                        logger.error("Qwen Image returned no object-removal image.")
+                        continue
+                    removed_obj_img_raw = np.array(images[0])
                 else:
                     raise NotImplementedError
                 # Resize to expected resolution (FLUX/Gemini may return slightly different dimensions)

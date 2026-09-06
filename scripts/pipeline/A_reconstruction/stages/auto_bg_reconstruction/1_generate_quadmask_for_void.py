@@ -159,13 +159,16 @@ def _sam3_keyframe_masks(keyframe_pil: Image.Image, primary_names, detections, s
 
 def _build_sam2_video_predictor():
     """Build SAM2 video predictor from local hydra config + checkpoint."""
-    sam2_root = REPO_ROOT / "deps" / "Any6D" / "sam2"
+    standalone_root = REPO_ROOT / "deps" / "sam2"
+    any6d_root = REPO_ROOT / "deps" / "Any6D" / "sam2"
+    sam2_root = standalone_root if standalone_root.exists() else any6d_root
     ckpt = sam2_root / "checkpoints" / "sam2.1_hiera_large.pt"
     if not ckpt.exists():
         ckpt = REPO_ROOT / "checkpoints" / "sam2.1_hiera_large.pt"
     if not ckpt.exists():
         raise SystemExit(f"sam2.1_hiera_large.pt not found at {ckpt}")
-    sys.path.insert(0, str(sam2_root))
+    if sam2_root.exists():
+        sys.path.insert(0, str(sam2_root))
     # SAM2 builds its model via hydra.compose against its OWN packaged configs, but its
     # __init__ registers them (initialize_config_module("sam2")) only if Hydra isn't already
     # initialized. This stage is a @hydra.main app (global Hydra pinned to scripts/cfg), so
@@ -182,7 +185,21 @@ def _build_sam2_video_predictor():
     )
 
 
-def _sam2_propagate(video_mp4: Path, keyframe_idx: int, obj_to_mask, num_frames: int,
+def _prepare_sam2_frame_dir(frames, frame_dir: Path) -> Path:
+    """Expose canonical PNGs under the numeric JPEG names required by SAM2."""
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    for old_path in frame_dir.iterdir():
+        if old_path.is_dir() and not old_path.is_symlink():
+            raise RuntimeError(f"Unexpected directory in SAM2 frame staging area: {old_path}")
+        old_path.unlink()
+    for idx, source_path in enumerate(frames):
+        # PIL detects the actual PNG content; the .jpg spelling only satisfies SAM2's
+        # frame discovery without duplicating or recompressing hundreds of images.
+        (frame_dir / f"{idx:05d}.jpg").symlink_to(source_path.resolve())
+    return frame_dir
+
+
+def _sam2_propagate(video_source: Path, keyframe_idx: int, obj_to_mask, num_frames: int,
                     out_h: int, out_w: int):
     """
     For each object, init SAM2 with its keyframe mask, propagate forward
@@ -199,7 +216,7 @@ def _sam2_propagate(video_mp4: Path, keyframe_idx: int, obj_to_mask, num_frames:
         # state is small enough that we can re-init per-object cheaply.
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
             state = predictor.init_state(
-                video_path=str(video_mp4),
+                video_path=str(video_source),
                 offload_video_to_cpu=True,
                 offload_state_to_cpu=True,
             )
@@ -292,20 +309,24 @@ def main(cfg):
     logger.info("Loaded %d frames; keyframe = %s (%dx%d)",
                 num_frames, keyframe_path.name, out_w, out_h)
 
-    # Resolve gcloud project
-    gcloud_project = sec.gcloud_project
-    if gcloud_project is None:
-        gcloud_project = subprocess.run(
-            ["gcloud", "config", "get-value", "project"],
-            capture_output=True, text=True
-        ).stdout.strip()
-        logger.info("Resolved gcloud project: %s", gcloud_project)
-
-    # 1) Gemini propose object names
-    logger.info("Running Gemini object proposal on keyframe...")
-    primary_names, full_names, detections = _gemini_propose(
-        keyframe_path, gcloud_project, sec.floor_category, sec.gemini_model
-    )
+    manual_objects = sec.get("manual_objects")
+    if manual_objects:
+        primary_names = [str(name) for name in manual_objects]
+        full_names = list(primary_names)
+        detections = []
+        logger.info("Using %d manually configured objects: %s", len(primary_names), primary_names)
+    else:
+        gcloud_project = sec.gcloud_project
+        if gcloud_project is None:
+            gcloud_project = subprocess.run(
+                ["gcloud", "config", "get-value", "project"],
+                capture_output=True, text=True
+            ).stdout.strip()
+            logger.info("Resolved gcloud project: %s", gcloud_project)
+        logger.info("Running Gemini object proposal on keyframe...")
+        primary_names, full_names, detections = _gemini_propose(
+            keyframe_path, gcloud_project, sec.floor_category, sec.gemini_model
+        )
     skip_set = set(sec.skip)
     primary_names = [n for n in primary_names if n not in skip_set]
     logger.info("Detected %d objects: %s", len(primary_names), primary_names)
@@ -339,8 +360,9 @@ def main(cfg):
 
     # 4) SAM2 video propagation
     logger.info("Running SAM2 video propagation across %d frames (forward + reverse)...", num_frames)
+    sam2_frame_dir = _prepare_sam2_frame_dir(frames, in_dir / "_sam2_frames")
     union_uint8 = _sam2_propagate(
-        video_mp4=video_mp4,
+        video_source=sam2_frame_dir,
         keyframe_idx=keyframe_idx,
         obj_to_mask=obj_to_mask,
         num_frames=num_frames,

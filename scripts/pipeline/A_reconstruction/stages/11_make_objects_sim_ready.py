@@ -25,6 +25,7 @@ from simfoundry.utils.processing_utils import extract_numbers_from_str
 from simfoundry.utils.python_utils import sanitize_path_component
 from simfoundry.utils.prompt_utils import prompt_object_mass_friction, prompt_articulated_object_parts_properties, parse_json_response
 from simfoundry.pipeline.articulation_physics import resolve_articulation_physics
+from simfoundry.pipeline.manual_physics import resolve_manual_physics
 from simfoundry.pipeline.stage_utils import StageResult, bootstrap_hydra_workdir, finalize_stage
 
 # see https://github.com/facebookresearch/hydra/issues/2949#issue-2516892001
@@ -193,7 +194,8 @@ def invalid_articulated_links(urdf_path: str, mesh_parts_dir: str) -> list[str]:
 def import_rigid_scene_object(
     *,
     cfg,
-    vlm: Gemini,
+    vlm: Gemini | None,
+    manual_physics: dict | None,
     obj_phrase: str,
     img_fpath: str,
     mesh_path: str,
@@ -205,20 +207,28 @@ def import_rigid_scene_object(
     volume_m3: float,
     rigid_scale: float,
 ) -> dict:
-    result = vlm(
-        prompt=prompt_object_mass_friction(
-            obj_phrase=obj_phrase,
-            bounding_box_cm=obb_extent * 100,
-            volume_cm=volume_m3 * (100 ** 3),
-        ),
-        image_paths=img_fpath,
-        temperature=0,
-        top_p=0,
-        seed=0,
-        print_results=True,
-    )
-    result_json = parse_json_response(vlm.get_result_text(result))
-    mass, friction = result_json["mass"], result_json["friction"]
+    if manual_physics is not None:
+        mass = manual_physics["mass"]
+        friction = manual_physics["friction"]
+        physics_source = "manual"
+    else:
+        if vlm is None:
+            raise RuntimeError(f"No VLM or manual physics configured for {obj_phrase}")
+        result = vlm(
+            prompt=prompt_object_mass_friction(
+                obj_phrase=obj_phrase,
+                bounding_box_cm=obb_extent * 100,
+                volume_cm=volume_m3 * (100 ** 3),
+            ),
+            image_paths=img_fpath,
+            temperature=0,
+            top_p=0,
+            seed=0,
+            print_results=True,
+        )
+        result_json = parse_json_response(vlm.get_result_text(result))
+        mass, friction = result_json["mass"], result_json["friction"]
+        physics_source = "vlm"
 
     rigid_collision_method = cfg.s11_sim.get("collision_method", "coacd")
     import_custom_object(
@@ -242,6 +252,7 @@ def import_rigid_scene_object(
         "model": obj_model,
         "name": img_name,
         "friction": friction,
+        "physics_source": physics_source,
     }
 
 
@@ -255,6 +266,14 @@ def resolve_requested_indices(cfg):
     if isinstance(raw, int):
         return {raw}
     return {int(v) for v in raw}
+
+
+def missing_manual_articulation_physics(obj_phrase: str):
+    """Fail when manual mode has neither authored nor stage-9 per-link physics."""
+    raise RuntimeError(
+        f"Articulated object {obj_phrase!r} has no stage-9 physics; "
+        "manual mode currently requires stage-9 per-part physics"
+    )
 
 
 @hydra.main(config_name="real2sim_cfg", config_path=CFG_DIR, version_base="1.3")
@@ -272,12 +291,18 @@ def main(cfg):
     logger.info(f"Output directory: {out_dir}")
     logger.info("="*60)
 
-    # Create VLM for physical property annotation
-    vlm = Gemini(
-        project=cfg.gcloud_project,
-        location="global",
-        model=vlm_model,
-    )
+    physics_mode = str(cfg.s11_sim.get("physics_mode", "vlm"))
+    if physics_mode not in {"vlm", "manual"}:
+        raise ValueError(f"s11_sim.physics_mode must be 'vlm' or 'manual', got {physics_mode!r}")
+    vlm = None
+    if physics_mode == "vlm":
+        vlm = Gemini(
+            project=cfg.gcloud_project,
+            location="global",
+            model=vlm_model,
+        )
+    else:
+        logger.info("Using manually configured rigid-object mass and friction")
 
     # Load articulation classification from stage 9
     articulation_root = resolve_articulation_root(cfg.s9_articulate_objects.out_dir)
@@ -397,9 +422,20 @@ def main(cfg):
 
         # Process rigid vs articulated objects separately
         if not is_articulated: # processing for solid objects only
+            manual_physics = (
+                resolve_manual_physics(
+                    cfg.s11_sim.manual_physics,
+                    obj_phrase=obj_phrase,
+                    obj_category=obj_category,
+                    idx=idx,
+                )
+                if physics_mode == "manual"
+                else None
+            )
             scene_objects_info[idx] = import_rigid_scene_object(
                 cfg=cfg,
                 vlm=vlm,
+                manual_physics=manual_physics,
                 obj_phrase=obj_phrase,
                 img_fpath=img_fpath,
                 mesh_path=mesh_path,
@@ -424,7 +460,7 @@ def main(cfg):
                 urdf_path=urdf_path,
                 fallback_parts_fn=lambda: process_articulated_object(
                     obj_phrase, urdf_path, mesh_parts_dir, img_fpath, vlm, tf_scale
-                ),
+                ) if vlm is not None else missing_manual_articulation_physics(obj_phrase),
             )
             if physics_source == "articulation_pipeline":
                 logger.info("Using articulation-pipeline physics for %s", obj_phrase)

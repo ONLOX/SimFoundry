@@ -100,6 +100,7 @@ s3_ground:    # env: simfoundry
   out_dir: "${root_dir}/${scene_name}/${s3_ground.out_dirname}"
   floor_categories: [desk, table, counter]
   floor_threshold: 0.5
+  allow_vlm_fallback: true
   floor_tilt_threshold: 0.125
   # The canonical frame the whole reconstruction is built from: stage 3 fits the support plane
   # in it, stage 4 makes its camera the world frame, and stage 5 crops every object out of it.
@@ -332,6 +333,7 @@ s9_articulate_objects:
   # workflow for refinement without being re-articulated).
   interactive_joint_refinement: false
   # Classification review options:
+  classification_mode: vlm            # vlm | manual (unspecified manual objects are rigid)
   classification_only: false          # If true, stop after writing object_classification.json
   interactive_review: false          # If true, prompt user to review/modify VLM classification
   force_articulated: []               # List of object names to force as articulated (overrides VLM)
@@ -356,6 +358,11 @@ s11_sim:          # env: simfoundry
   out_dirname: s11_sim
   out_dir: "${root_dir}/${scene_name}/${s11_sim.out_dirname}"
   vlm_model: gemini-3.1-pro-preview   # options: gemini-2.5-pro, gemini-2.5-flash, gemini-3.1-pro-preview
+  physics_mode: vlm                   # vlm | manual
+  manual_physics:
+    default: {mass: 0.2, friction: 0.5}  # kg and unitless coefficient
+    # Keys may be raw prompts, sanitized categories, iter_N, or numeric indices.
+    overrides: {}
   object_indices: null
   parallel_workers: 2
   collision_method: coacd

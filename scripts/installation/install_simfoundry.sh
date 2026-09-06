@@ -457,8 +457,19 @@ fi
 python -c 'import coacd, evdev, pymeshlab; print("Verified coacd, pymeshlab, and evdev imports")'
 echo "Installed coacd, pymeshlab, and evdev"
 
-# Step 2.14: Install SAM3
+# Step 2.14: Install SAM2 and SAM3
 if [[ "${SIMULATION_ONLY}" == false ]]; then
+SAM2_COMMIT="${SAM2_COMMIT:-2b90b9f5ceec907a1c18123530e92e794ad901a4}"
+if [ ! -d "sam2" ]; then
+  git clone https://github.com/facebookresearch/sam2.git
+  git -C sam2 checkout --detach "${SAM2_COMMIT}"
+fi
+cd sam2
+pip install -e . > /dev/null
+python -c 'from sam2.build_sam import build_sam2_video_predictor; print("Verified SAM2 import")'
+echo "Installed SAM2"
+cd .. # back to deps directory
+
 SAM3_COMMIT="${SAM3_COMMIT:-46957e47805eaa273f4aa7bbbd25a88bca9108ce}"
 if [ ! -d "sam3" ]; then
   git clone https://github.com/facebookresearch/sam3.git

@@ -72,6 +72,8 @@ stage 8 uses FoundationPose from the main `simfoundry` environment.
 
 See [Dual-machine reconstruction bundle](DUAL_MACHINE_BUNDLE.md) for the full
 export, transfer, import, and robot-free scene assembly workflow.
+For operation without Google API access, see
+[Qwen + manual reconstruction](QWEN_MANUAL_RECONSTRUCTION.md).
 
 This installs:
 

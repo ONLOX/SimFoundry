@@ -231,20 +231,31 @@ def main(cfg):
 
     # Infer floor possibilities
     masks, boxes_xyxy, logits, phrase = predict_floor_masks(rgb_fpath, sam3, floor_categories, cfg.s3_ground.floor_threshold, cfg.visualize)
+    allow_vlm_fallback = cfg.s3_ground.get("allow_vlm_fallback", True)
 
     if len(masks) == 0:
         print(f"Found no masks for floor categories: {floor_categories} with threshold: {cfg.s3_ground.floor_threshold}.")
         if use_interactive:
             print("Falling back to interactive point-click segmentation.")
             masks, boxes_xyxy, logits, phrase = predict_masks_interactive(rgb_fpath, sam3)
+        elif not allow_vlm_fallback:
+            raise RuntimeError(
+                "No floor mask matched the manual floor categories and "
+                "s3_ground.allow_vlm_fallback=false"
+            )
         else:
             print("Trying with LLM categories")
             masks, boxes_xyxy, logits, phrase = predict_masks_with_llm(rgb_fpath, cfg, sam3)
 
     if len(masks) == 0:
-        if use_interactive:
+        if use_interactive and allow_vlm_fallback:
             print("Trying with LLM categories")
             masks, boxes_xyxy, logits, phrase = predict_masks_with_llm(rgb_fpath, cfg, sam3)
+        elif use_interactive:
+            raise RuntimeError(
+                "Interactive floor segmentation found no mask and "
+                "s3_ground.allow_vlm_fallback=false"
+            )
         else:
             print("LLM categories also failed. Falling back to interactive point-click segmentation.")
             masks, boxes_xyxy, logits, phrase = predict_masks_interactive(rgb_fpath, sam3)

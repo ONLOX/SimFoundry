@@ -362,11 +362,25 @@ def _ns_env(env: dict) -> dict:
     # rather than the standard include/. The C++ host compiler needs this path
     # to find cuda_runtime_api.h when compiling gsplat's .cpp extension files.
     mamba_bin = _shutil.which("mamba") or _shutil.which("conda") or ""
-    conda_base = os.path.dirname(os.path.dirname(mamba_bin)) if mamba_bin else ""
-    ns_cuda_include = os.path.join(conda_base, "envs", NS_ENV_NAME,
-                                   "targets", "x86_64-linux", "include")
+    ns_prefix = ""
+    if mamba_bin:
+        prefix_result = subprocess.run(
+            [mamba_bin, "run", "-n", NS_ENV_NAME, "python", "-c", "import sys; print(sys.prefix)"],
+            capture_output=True,
+            text=True,
+        )
+        if prefix_result.returncode == 0:
+            prefix_lines = [line.strip() for line in prefix_result.stdout.splitlines() if line.strip()]
+            if prefix_lines:
+                ns_prefix = prefix_lines[-1]
+    ns_cuda_include = os.path.join(ns_prefix, "targets", "x86_64-linux", "include")
     if os.path.isdir(ns_cuda_include):
-        env["CPLUS_INCLUDE_PATH"] = f"{ns_cuda_include}:{env.get('CPLUS_INCLUDE_PATH', '')}"
+        inherited_include = env.get("CPLUS_INCLUDE_PATH")
+        env["CPLUS_INCLUDE_PATH"] = (
+            f"{ns_cuda_include}:{inherited_include}" if inherited_include else ns_cuda_include
+        )
+    else:
+        logger.warning("Could not resolve CUDA headers for %s under %s", NS_ENV_NAME, ns_prefix)
     # torch 2.7.1+cu128 + gsplat 1.5.3 supports sm_120 (RTX 5090 / Blackwell).
     env["TORCH_CUDA_ARCH_LIST"] = "7.0;7.5;8.0;8.6;8.9;9.0;12.0"
     # Strip simfoundry-side compiler/toolchain vars and any stale CUDA_HOME so gsplat's

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,6 +21,62 @@ _BUILD_ENV_KEYS = (
     "GCC", "GCC_AR", "GCC_NM", "GCC_RANLIB", "CXXFILT", "CUDAARCHS",
     "CMAKE_ARGS", "CUDA_HOME",
 )
+
+
+def _resolve_nvcc_host_cxx(
+    candidates: tuple[str | None, ...] | None = None,
+) -> str:
+    """Return a C++ compiler ``nvcc`` can use as ``-ccbin``.
+
+    The 3dgrut env commonly has conda ``gcc_linux-64`` without ``gxx_linux-64``.
+    ``x86_64-conda-linux-gnu-cc`` then dies with ``cannot execute 'cc1plus'``
+    when JIT-building ``lib3dgut_cc``. System ``g++`` already compiles the
+    ``.cpp`` side of that extension; point ``nvcc`` at the same compiler.
+    """
+    if candidates is None:
+        candidates = ("/usr/bin/g++", shutil.which("g++"))
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    raise RuntimeError(
+        "No C++ host compiler found for 3dgrut JIT. Install g++ or "
+        "gxx_linux-64 in the 3dgrut environment."
+    )
+
+
+def _nvcc_host_compiler_exports(host_cxx: str) -> str:
+    """Shell assignments that win over 3dgrut's persisted conda ``CC``.
+
+    ``nvcc`` keeps the *last* ``-ccbin``. PyTorch's cpp_extension emits one from
+    ``$CC`` after ``NVCC_PREPEND_FLAGS``, so prepend-only overrides lose and the
+    conda gcc wrapper (no ``cc1plus``) is used again.
+    """
+    ccbin = shlex.quote("-ccbin " + host_cxx)
+    quoted = shlex.quote(host_cxx)
+    return (
+        f"export CC={quoted}; "
+        f"export CXX={quoted}; "
+        f"export CUDAHOSTCXX={quoted}; "
+        f"export NVCC_PREPEND_FLAGS={ccbin}; "
+        f"export NVCC_APPEND_FLAGS={ccbin}"
+    )
+
+
+def _ply_to_usd_command(
+    exporter: Path,
+    in_ply: Path,
+    out_usdz: Path,
+    *,
+    env_name: str,
+    host_cxx: str,
+) -> list[str]:
+    """Build the mamba-run command that converts a PLY after env activation."""
+    inner = (
+        f"{_nvcc_host_compiler_exports(host_cxx)}; "
+        f"exec python {shlex.quote(str(exporter))} "
+        f"{shlex.quote(str(in_ply))} --output_file {shlex.quote(str(out_usdz))}"
+    )
+    return ["mamba", "run", "-n", env_name, "bash", "-c", inner]
 
 
 def convert_ply_to_usdz(
@@ -49,10 +106,11 @@ def convert_ply_to_usdz(
     for key in _BUILD_ENV_KEYS:
         env.pop(key, None)
     subprocess.run(
-        [
-            "mamba", "run", "-n", env_name, "python", str(exporter),
-            str(in_ply), "--output_file", str(out_usdz),
-        ],
+        _ply_to_usd_command(
+            exporter, in_ply, out_usdz,
+            env_name=env_name,
+            host_cxx=_resolve_nvcc_host_cxx(),
+        ),
         check=True,
         env=env,
     )

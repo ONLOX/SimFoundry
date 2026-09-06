@@ -38,7 +38,7 @@ set -euo pipefail
 
 # ---------- args ----------
 if [[ $# -lt 2 ]]; then
-    echo "usage: $0 <scene_name> <video_path> [--mode full|export|assemble] [--clean] [--num-frames N] [--env-simfoundry NAME] [--env-da3 NAME] [--env-void NAME] [--env-nerfstudio NAME] [--env-3dgrut NAME] [--floor-category TEXT]"
+    echo "usage: $0 <scene_name> <video_path> [--mode full|export|assemble] [--clean] [--num-frames N] [--manual-objects JSON_LIST] [--env-simfoundry NAME] [--env-da3 NAME] [--env-void NAME] [--env-nerfstudio NAME] [--env-3dgrut NAME] [--floor-category TEXT]"
     exit 1
 fi
 SCENE="$1"; shift
@@ -52,6 +52,7 @@ DA3_ENV="da3"
 VOID_ENV_NAME="void"
 NERFSTUDIO_ENV_NAME="nerfstudio_simfoundry"
 THREEDGRUT_ENV_NAME="3dgrut"
+MANUAL_OBJECTS=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --clean) CLEAN=1; shift ;;
@@ -62,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         --env-void) VOID_ENV_NAME="$2"; shift 2 ;;
         --env-nerfstudio) NERFSTUDIO_ENV_NAME="$2"; shift 2 ;;
         --env-3dgrut) THREEDGRUT_ENV_NAME="$2"; shift 2 ;;
+        --manual-objects) MANUAL_OBJECTS="$2"; shift 2 ;;
         --floor-category) FLOOR_CATEGORY="$2"; shift 2 ;;
         *) echo "unknown arg: $1"; exit 1 ;;
     esac
@@ -240,13 +242,20 @@ echo "[orchestrator] precondition OK — reusing canonical reconstruction in ${D
 
 # ===================== Background ingest (steps 1-4) =====================
 
-# Stage VOID input from the canonical s1_video (NO re-subsampling, NO orig-DA3 here).
-# void/input/ must be a REAL dir — step 1 writes quadmask/prompt/meta into it; only the two
-# inputs are symlinked back to the canonical frame set, so VOID cleans exactly the
-# frames orig-DA3 saw.
+# Stage VOID input from the canonical subsampled frames (NO re-subsampling, NO orig-DA3 here).
+# void/input/ must be a REAL dir — step 1 writes quadmask/prompt/meta into it. The canonical
+# input_video.mp4 may contain the raw frame count, so encode a video from the exact PNG set
+# used by orig-DA3; VOID's video and mask must have the same NUM_FRAMES timeline.
 mkdir -p "${VOID_INPUT_DIR}"
 ln -sfn "${S1_FRAMES_DIR}" "${VOID_INPUT_DIR}/subsampled"
-ln -sfn "${S1_VIDEO_MP4}" "${VOID_INPUT_DIR}/input_video.mp4"
+VOID_INPUT_VIDEO="${VOID_INPUT_DIR}/input_video.mp4"
+VOID_INPUT_VIDEO_TMP="${VOID_INPUT_DIR}/input_video.partial.mp4"
+rm -f "${VOID_INPUT_VIDEO}" "${VOID_INPUT_VIDEO_TMP}"
+ffmpeg -y -loglevel error \
+    -framerate 12 -pattern_type glob -i "${S1_FRAMES_DIR}/*.png" \
+    -c:v libx264 -pix_fmt yuv420p -crf 18 \
+    "${VOID_INPUT_VIDEO_TMP}"
+mv "${VOID_INPUT_VIDEO_TMP}" "${VOID_INPUT_VIDEO}"
 
 # Fragmentation-friendly allocator for the chunked void-DA3 (per-chunk subprocess).
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -255,10 +264,16 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # and take overrides as key=val (e.g. scene_name=..., floor_category=...).
 # floor_category contains commas ("desk, table, or counter"); Hydra treats an unquoted
 # comma value as a list, so wrap it in LITERAL single quotes that Hydra strips to a string.
+QUADMASK_OVERRIDES=(
+    "scene_name=${SCENE}"
+    "floor_category='${FLOOR_CATEGORY}'"
+)
+if [[ -n "$MANUAL_OBJECTS" ]]; then
+    QUADMASK_OVERRIDES+=("s1_quadmask.manual_objects=${MANUAL_OBJECTS}")
+fi
 run_or_skip "1 quadmask" "$SIMFOUNDRY_ENV" "${VOID_INPUT_DIR}/quadmask_0.mp4" -- \
     python scripts/pipeline/A_reconstruction/stages/auto_bg_reconstruction/1_generate_quadmask_for_void.py \
-        scene_name="${SCENE}" \
-        floor_category="'${FLOOR_CATEGORY}'"
+        "${QUADMASK_OVERRIDES[@]}"
 
 run_or_skip "2 pass1" "$SIMFOUNDRY_ENV" "${PASS1_STITCHED}" -- \
     python scripts/pipeline/A_reconstruction/stages/auto_bg_reconstruction/2_run_void_pass1.py \

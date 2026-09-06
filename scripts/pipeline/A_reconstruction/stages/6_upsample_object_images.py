@@ -14,6 +14,7 @@ import cv2
 import logging
 
 from simfoundry.models.vlm import GPT, FLUX1, Gemini
+from simfoundry.models.qwen_image import QwenImage
 from simfoundry.utils.prompt_utils import prompt_upsample_image, prompt_upsample_image_rotate, \
     prompt_flux_object_completion_and_upsample_preserve, prompt_upsample_image_gemini, prompt_infill_image, prompt_infill_image_no_conditioning, \
     prompt_check_object_validity, parse_json_response
@@ -43,6 +44,8 @@ UPSAMPLE_MODELS = {
     "gemini-3-pro-image",
     "gpt",
     "flux",
+    "qwen-image-3.0",
+    "qwen-image-3.0-pro",
 }
 
 from simfoundry import CFG_DIR
@@ -134,6 +137,11 @@ def main(cfg):
         # Flux prompt is object-specific; format it inside the per-object loop.
         upsample_prompt = None
         infill_prompt = None
+    elif model_name in QwenImage.VERSIONS:
+        model = QwenImage(model=model_name)
+        for (out_w, out_h) in model.IMAGE_SHAPES:
+            ratios[(out_w, out_h)] = {"ratio": out_w / out_h}
+        upsample_prompt = prompt_upsample_image_gemini()
     else:
         raise NotImplementedError
 
@@ -214,6 +222,17 @@ def main(cfg):
                 print_results=cfg.visualize,
             )
             return image, image
+        elif model_name in QwenImage.VERSIONS:
+            assert isinstance(model, QwenImage)
+            result = model(
+                prompt=prompt,
+                image_path=img_path,
+                size=target_wh,
+                n_retries=3,
+                print_results=cfg.visualize,
+            )
+            if result is None:
+                raise RuntimeError(f"Qwen Image returned no result for {task} on [{obj_phrase}] at {img_path}")
         else:
             raise NotImplementedError
 
@@ -289,7 +308,7 @@ def main(cfg):
         ]
         input_img_padded = pad_image_to_ratio(cropped_image, target_ratio=ratios[target_wh]["ratio"], padding_color=(0, 0, 0))
         # If we're using flux, then resize to the desired resolution
-        if model_name == "flux":
+        if model_name == "flux" or model_name in QwenImage.VERSIONS:
             input_img_padded = cv2.resize(input_img_padded, target_wh)
         input_img_padded_path = f"{out_dir}/padded/{img_name}.png"
         Image.fromarray(input_img_padded).save(input_img_padded_path)

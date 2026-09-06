@@ -314,37 +314,61 @@ def main(cfg):
         if not os.path.exists(img_path):
             logger.warning(f"Missing image for {obj_name}")
 
-    # Infer articulated candidates from the source scene frame and the exact list of
-    # valid detected objects, via Vertex AI Gemini.
-    vlm = Gemini(
-        project=cfg.gcloud_project,
-        location="global",
-        model=cfg.s9_articulate_objects.vlm_model,
-    )
-
-    prompt = prompt_list_articulated_objects(list(object_list.keys()))
-    query_image_path = get_articulation_query_image_path(cfg)
-    result = vlm(
-        prompt=prompt,
-        image_paths=query_image_path,
-        temperature=0,
-        top_p=0,
-        seed=0,
-        print_results=cfg.visualize,
-    )
-    if result is None:
-        raise RuntimeError("Articulation VLM query failed and returned no result.")
-    result_text = vlm.get_result_text(result)
-    articulated, non_articulated, ignored_vlm_objects, raw_vlm_selection = parse_articulated_object_selection(
-        result_text,
-        list(object_list.keys()),
-    )
-    
-    logger.info(f"VLM Classification:")
-    logger.info(f"  Articulated: {articulated}")
-    logger.info(f"  Non-articulated: {non_articulated}")
-    if ignored_vlm_objects:
-        logger.warning(f"  Ignored non-detected VLM outputs: {ignored_vlm_objects}")
+    classification_mode = str(cfg.s9_articulate_objects.get("classification_mode", "vlm"))
+    if classification_mode == "manual":
+        all_objects = list(object_list.keys())
+        articulated = list(cfg.s9_articulate_objects.get("force_articulated", []) or [])
+        explicitly_non_articulated = set(
+            cfg.s9_articulate_objects.get("force_non_articulated", []) or []
+        )
+        unknown_articulated = set(articulated) - set(all_objects)
+        if unknown_articulated:
+            raise ValueError(
+                f"Manual articulated list contains unknown objects: {sorted(unknown_articulated)}"
+            )
+        overlap = set(articulated) & explicitly_non_articulated
+        if overlap:
+            raise ValueError(f"Objects cannot be both articulated and non-articulated: {sorted(overlap)}")
+        # Unspecified objects are rigid by default; accidental articulation is expensive.
+        non_articulated = [name for name in all_objects if name not in articulated]
+        query_image_path = None
+        result_text = None
+        ignored_vlm_objects = []
+        raw_vlm_selection = list(articulated)
+        logger.info("Using manual articulation classification")
+    elif classification_mode == "vlm":
+        vlm = Gemini(
+            project=cfg.gcloud_project,
+            location="global",
+            model=cfg.s9_articulate_objects.vlm_model,
+        )
+        prompt = prompt_list_articulated_objects(list(object_list.keys()))
+        query_image_path = get_articulation_query_image_path(cfg)
+        result = vlm(
+            prompt=prompt,
+            image_paths=query_image_path,
+            temperature=0,
+            top_p=0,
+            seed=0,
+            print_results=cfg.visualize,
+        )
+        if result is None:
+            raise RuntimeError("Articulation VLM query failed and returned no result.")
+        result_text = vlm.get_result_text(result)
+        articulated, non_articulated, ignored_vlm_objects, raw_vlm_selection = parse_articulated_object_selection(
+            result_text,
+            list(object_list.keys()),
+        )
+        logger.info(f"VLM Classification:")
+        logger.info(f"  Articulated: {articulated}")
+        logger.info(f"  Non-articulated: {non_articulated}")
+        if ignored_vlm_objects:
+            logger.warning(f"  Ignored non-detected VLM outputs: {ignored_vlm_objects}")
+    else:
+        raise ValueError(
+            f"s9_articulate_objects.classification_mode must be 'vlm' or 'manual', "
+            f"got {classification_mode!r}"
+        )
 
     raw_articulated = list(articulated)
     raw_non_articulated = list(non_articulated)

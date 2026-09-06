@@ -165,6 +165,12 @@ def _run_pass2_chunk(in_dir: Path, video_name: str, chunk_id: int, start: int, c
     chunk_noise = chunk_root / "noise_cache"
     chunk_data.mkdir(parents=True, exist_ok=True)
     chunk_pass1.mkdir(parents=True, exist_ok=True)
+    # A failed warped-noise run leaves a partial directory that VOID intentionally
+    # refuses to overwrite. A normal rerun owns this chunk, so clear only its
+    # generated output/cache; restitch_only never enters this function.
+    for generated_dir in (chunk_out, chunk_noise):
+        if generated_dir.exists():
+            shutil.rmtree(generated_dir)
     chunk_out.mkdir(parents=True, exist_ok=True)
     chunk_noise.mkdir(parents=True, exist_ok=True)
 

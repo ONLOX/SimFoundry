@@ -69,20 +69,22 @@ if [[ ! -f "${VOID_DIR}/requirements.txt" ]]; then
   exit 1
 fi
 
-PATCH="${PROJECT_ROOT}/patches/void-model.patch"
-if [ -f "${PATCH}" ]; then
-  if git -C "${VOID_DIR}" apply --check --reverse "${PATCH}" 2>/dev/null; then
-    echo "patches/void-model.patch already applied"
-  elif git -C "${VOID_DIR}" apply --check "${PATCH}"; then
-    git -C "${VOID_DIR}" apply "${PATCH}"
-    echo "Applied patches/void-model.patch (rp.save_video_mp4 libx264-overflow fix)"
+for patch_name in void-model.patch void-model-headless.patch; do
+  PATCH="${PROJECT_ROOT}/patches/${patch_name}"
+  if [ -f "${PATCH}" ]; then
+    if git -C "${VOID_DIR}" apply --check --reverse "${PATCH}" 2>/dev/null; then
+      echo "patches/${patch_name} already applied"
+    elif git -C "${VOID_DIR}" apply --check "${PATCH}"; then
+      git -C "${VOID_DIR}" apply "${PATCH}"
+      echo "Applied patches/${patch_name}"
+    else
+      echo "ERROR: patches/${patch_name} cannot be applied cleanly." >&2
+      exit 1
+    fi
   else
-    echo "ERROR: patches/void-model.patch cannot be applied cleanly." >&2
-    exit 1
+    echo "WARNING: ${PATCH} not found; the corresponding VOID runtime fix will be missing."
   fi
-else
-  echo "WARNING: ${PATCH} not found; the VOID Pass 2 libx264-overflow fix will be missing."
-fi
+done
 
 # ------------------------------------------------------------------------------
 # Step 2: create the env + install deps with the sm_120 / av fixes

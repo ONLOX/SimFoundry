@@ -148,6 +148,18 @@ if ! mamba run -n "${env_name}" true 2>/dev/null; then
   exit 1
 fi
 
+# create_conda.sh installs gcc_linux-64 (C only). nvcc uses that as -ccbin when
+# JIT-compiling lib3dgut_cc, which needs cc1plus from gxx_linux-64.
+if ! mamba run -n "${env_name}" bash -c 'command -v x86_64-conda-linux-gnu-c++ >/dev/null'; then
+  gcc_ver="$(mamba run -n "${env_name}" x86_64-conda-linux-gnu-cc -dumpversion 2>/dev/null | tail -1 | cut -d. -f1 || true)"
+  if [[ -z "${gcc_ver}" ]]; then
+    echo "WARNING: conda gcc wrapper missing; 3dgrut JIT will fall back to system g++."
+  else
+    echo "Installing gxx_linux-64=${gcc_ver} (cc1plus for 3dgrut JIT)..."
+    mamba install -n "${env_name}" -y "gxx_linux-64=${gcc_ver}" -c conda-forge
+  fi
+fi
+
 # ------------------------------------------------------------------------------
 # Step 2.5: ensure uv is available inside the env
 #
