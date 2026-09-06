@@ -56,6 +56,23 @@ The easiest path builds every pipeline conda env in one shot:
 bash scripts/installation/install_everything.sh
 ```
 
+For a split reconstruction / simulation deployment, use the mutually exclusive
+installation profiles:
+
+```bash
+# H20 reconstruction host: all reconstruction envs, no OmniGibson runtime.
+bash scripts/installation/install_everything.sh --reconstruction-only
+
+# 4090 simulation host: only the main OmniGibson / rollout env.
+bash scripts/installation/install_everything.sh --simulation-only
+```
+
+The reconstruction profile omits the legacy `any6d` environment: canonical
+stage 8 uses FoundationPose from the main `simfoundry` environment.
+
+See [Dual-machine reconstruction bundle](DUAL_MACHINE_BUNDLE.md) for the full
+export, transfer, import, and robot-free scene assembly workflow.
+
 This installs:
 
 | Env | Purpose | Script |

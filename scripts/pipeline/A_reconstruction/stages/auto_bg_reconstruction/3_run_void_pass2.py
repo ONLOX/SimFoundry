@@ -29,6 +29,7 @@ Run from simfoundry env (subprocesses into void env per chunk; Hydra override sy
 Per-stage values can be overridden directly, e.g. `s3_pass2.in_dir=...`.
 """
 import json
+import os
 import logging
 import shutil
 import subprocess
@@ -51,7 +52,7 @@ VOID_ROOT = REPO_ROOT / "deps" / "void-model"
 
 # The `void` env must already exist (`mamba env list`). We shell into it per
 # chunk via `mamba run -n void python …`, so this script can stay in the simfoundry env.
-VOID_ENV_NAME = "void"
+VOID_ENV_NAME = os.environ.get("VOID_ENV_NAME", "void")
 PASS2_SCRIPT = VOID_ROOT / "inference" / "cogvideox_fun" / "inference_with_pass1_warped_noise.py"
 
 DEFAULT_W = 672

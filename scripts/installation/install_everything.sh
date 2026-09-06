@@ -21,6 +21,8 @@
 #   bash scripts/installation/install_everything.sh [--project-root DIR] [--fresh]
 #                                                   [--checkpoints] [--only "a b c"]
 #                                                   [--env-suffix SFX]
+#                                                   [--reconstruction-only]
+#                                                   [--simulation-only]
 #
 #   --fresh             Remove each target env before (re)installing it (clean rebuild).
 #   --checkpoints       Also run download_checkpoints.sh at the end. OPT-IN: checkpoints
@@ -35,6 +37,12 @@
 #                       of envs alongside an existing install instead of reusing (or, with
 #                       --fresh, deleting) same-named envs. Also honored as the ENV_SUFFIX
 #                       environment variable.
+#   --reconstruction-only
+#                       Skip BEHAVIOR-1K, OmniGibson, robot assets, and LeRobot when
+#                       installing the main simfoundry env. Other reconstruction envs
+#                       selected by --only are unchanged.
+#   --simulation-only   Install only the main simulation / rollout environment.
+#                       Cannot be combined with reconstruction envs in --only.
 #
 # Prereqs: mamba (Miniforge) and `uv` (for 3dgrut) on PATH. The void + nerfstudio installers
 # need internet for the cu128 torch wheels; download_checkpoints needs `huggingface-cli login`
@@ -52,7 +60,10 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 project_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FRESH=false
 DOWNLOAD_CHECKPOINTS=false
+RECONSTRUCTION_ONLY=false
+SIMULATION_ONLY=false
 ONLY=""
+ONLY_EXPLICIT=false
 ENV_SUFFIX="${ENV_SUFFIX:-}"
 
 while [[ $# -gt 0 ]]; do
@@ -60,14 +71,25 @@ while [[ $# -gt 0 ]]; do
     --project-root)     project_root="$2"; shift 2 ;;
     --fresh)            FRESH=true; shift ;;
     --checkpoints)      DOWNLOAD_CHECKPOINTS=true; shift ;;
-    --only)             ONLY="$2"; shift 2 ;;
+    --only)             ONLY="$2"; ONLY_EXPLICIT=true; shift 2 ;;
     --env-suffix)       ENV_SUFFIX="$2"; shift 2 ;;
+    --reconstruction-only) RECONSTRUCTION_ONLY=true; shift ;;
+    --simulation-only)  SIMULATION_ONLY=true; shift ;;
     -h|--help)
-      sed -n '2,41p' "$(readlink -f "${BASH_SOURCE[0]}")"; exit 0 ;;
+      sed -n '2,46p' "$(readlink -f "${BASH_SOURCE[0]}")"; exit 0 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
 PROJECT_ROOT="$(cd "$project_root" && pwd)"
+
+if [[ "${RECONSTRUCTION_ONLY}" == true && "${SIMULATION_ONLY}" == true ]]; then
+  echo "Error: --reconstruction-only and --simulation-only are mutually exclusive." >&2
+  exit 2
+fi
+if [[ "${SIMULATION_ONLY}" == true && "${DOWNLOAD_CHECKPOINTS}" == true ]]; then
+  echo "Error: --checkpoints is not used by --simulation-only." >&2
+  exit 2
+fi
 
 # Map short name -> "installer_script env_name"
 declare -A INSTALLER=(
@@ -83,6 +105,23 @@ ORDER=(simfoundry hunyuan any6d da3 void nerfstudio 3dgrut)
 if [[ -n "${ONLY}" ]]; then
   read -r -a ORDER <<< "${ONLY}"
 fi
+if [[ "${RECONSTRUCTION_ONLY}" == true && "${ONLY_EXPLICIT}" == false ]]; then
+  # The canonical stage 8 runs FoundationPose in the main simfoundry env.
+  # any6d is not part of stages 1-12 and builds against the host nvcc, which
+  # needlessly couples reconstruction installs to the system CUDA version.
+  ORDER=(simfoundry hunyuan da3 void nerfstudio 3dgrut)
+fi
+if [[ "${SIMULATION_ONLY}" == true ]]; then
+  if [[ "${ONLY_EXPLICIT}" == true ]]; then
+    for key in "${ORDER[@]}"; do
+      if [[ "${key}" != "simfoundry" ]]; then
+        echo "Error: --simulation-only may only install the simfoundry environment." >&2
+        exit 2
+      fi
+    done
+  fi
+  ORDER=(simfoundry)
+fi
 
 echo "============================================================"
 echo "install_everything.sh"
@@ -91,6 +130,8 @@ echo "  envs to install:  ${ORDER[*]}"
 echo "  env suffix:       ${ENV_SUFFIX:-<none>}"
 echo "  fresh rebuild:    ${FRESH}"
 echo "  download ckpts:   ${DOWNLOAD_CHECKPOINTS}"
+echo "  reconstruction:   ${RECONSTRUCTION_ONLY}"
+echo "  simulation:       ${SIMULATION_ONLY}"
 echo "============================================================"
 
 # conda-forge is required by 3dgrut's create_conda.sh (and harmless otherwise).
@@ -112,12 +153,30 @@ for key in "${ORDER[@]}"; do
     echo "    --fresh: removing existing env '${envn}'..."
     mamba env remove -n "${envn}" -y 2>/dev/null || true
   elif mamba run -n "${envn}" true 2>/dev/null; then
-    # Resumable: the per-env installers `mamba create` and would error on an
-    # existing env, so skip envs already present (use --fresh to force a rebuild).
-    echo "    env '${envn}' already exists — skipping (use --fresh to rebuild)."
-    continue
+    if [[ "${key}" == "simfoundry" ]]; then
+      # The main installer supports in-place reuse. This matters when changing
+      # from a reconstruction profile to a simulation profile on an existing env.
+      echo "    env '${envn}' already exists — updating in place."
+    elif [[ "${key}" == "da3" || "${key}" == "hunyuan" ]]; then
+      # These environments execute SimFoundry's Hydra stage entrypoints, not
+      # only their upstream model packages. Existing user environments need a
+      # small integration bridge even when their model install is already valid.
+      echo "    env '${envn}' already exists — installing SimFoundry stage bridge."
+      mamba run -n "${envn}" python -m pip install hydra-core
+      mamba run -n "${envn}" python -m pip install -e "${PROJECT_ROOT}" --no-deps
+      continue
+    else
+      echo "    env '${envn}' already exists — skipping (use --fresh to rebuild)."
+      continue
+    fi
   fi
-  bash "${SCRIPT_DIR}/${script}" --project-root "${PROJECT_ROOT}" --env-name "${envn}" --default
+  installer_args=(--project-root "${PROJECT_ROOT}" --env-name "${envn}" --default)
+  if [[ "${key}" == "simfoundry" && "${RECONSTRUCTION_ONLY}" == true ]]; then
+    installer_args+=(--reconstruction-only)
+  elif [[ "${key}" == "simfoundry" && "${SIMULATION_ONLY}" == true ]]; then
+    installer_args+=(--simulation-only)
+  fi
+  bash "${SCRIPT_DIR}/${script}" "${installer_args[@]}"
 done
 
 if [[ "${DOWNLOAD_CHECKPOINTS}" == true ]]; then

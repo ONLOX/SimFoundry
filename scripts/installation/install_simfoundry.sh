@@ -43,6 +43,8 @@ unset ENV_NAME PROJECT_ROOT
 CUDA_VERSION="12.8"
 INSTALL_TRELLIS=false
 INSTALL_ZED=false
+RECONSTRUCTION_ONLY=false
+SIMULATION_ONLY=false
 CUDA_ARCH_LIST=""
 ROBOT_ASSET_FALLBACK_ROOT=""
 
@@ -55,11 +57,40 @@ while [[ $# -gt 0 ]]; do
         --cuda-version) CUDA_VERSION="$2"; shift 2 ;;
         --trellis) INSTALL_TRELLIS=true; shift ;;
         --zed) INSTALL_ZED=true; shift ;;
+        --reconstruction-only) RECONSTRUCTION_ONLY=true; shift ;;
+        --simulation-only) SIMULATION_ONLY=true; shift ;;
         --cuda-arch-list) CUDA_ARCH_LIST="$2"; shift 2 ;;
         --robot-asset-fallback-root) ROBOT_ASSET_FALLBACK_ROOT="$2"; shift 2 ;;
+        -h|--help)
+          cat <<'EOF'
+Usage: install_simfoundry.sh [options]
+
+Options:
+  --project-root DIR
+  --env-name NAME
+  --cuda-version VERSION
+  --cuda-arch-list LIST
+  --trellis
+  --zed
+  --reconstruction-only       Skip BEHAVIOR-1K, OmniGibson, robot assets, and LeRobot
+  --simulation-only           Skip reconstruction model dependencies; install simulation and rollout
+  --robot-asset-fallback-root DIR
+  --default                   Accept defaults without prompting
+EOF
+          exit 0
+          ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+if [[ "${RECONSTRUCTION_ONLY}" == true && "${SIMULATION_ONLY}" == true ]]; then
+  echo "Error: --reconstruction-only and --simulation-only are mutually exclusive." >&2
+  exit 2
+fi
+if [[ "${SIMULATION_ONLY}" == true && "${INSTALL_TRELLIS}" == true ]]; then
+  echo "Error: --trellis cannot be combined with --simulation-only." >&2
+  exit 2
+fi
 
 if [[ ! ${DEFAULT} == true ]]; then
   read -p "Enter project root (default: $project_root): " PROJECT_ROOT
@@ -76,6 +107,8 @@ fi
 
 # Get environment name from user
 echo "=== SimFoundry Environment Setup ==="
+echo "  reconstruction_only: ${RECONSTRUCTION_ONLY}"
+echo "  simulation_only:     ${SIMULATION_ONLY}"
 
 if [[ ! ${DEFAULT} == true ]]; then
   read -p "Enter environment name (default: ${env_name}): " ENV_NAME
@@ -215,6 +248,10 @@ if [ ! -d "deps" ]; then
 fi
 cd deps
 
+# Reconstruction model stack. Simulation-only hosts consume a reconstruction
+# bundle and therefore do not need any of these source checkouts or CUDA builds.
+if [[ "${SIMULATION_ONLY}" == false ]]; then
+
 # Step 2.4: Install DINOv2
 DINOV2_COMMIT="${DINOV2_COMMIT:-7764ea0f912e53c92e82eb78a2a1631e92725fc8}"
 if [ ! -d "dinov2" ]; then
@@ -343,16 +380,15 @@ pip install --no-deps -e . > /dev/null
 echo "Installed Depth Anything 3 runtime"
 cd ..
 
+else
+  echo "Simulation-only: skipping reconstruction model dependencies"
+fi
+
 # Step 2.12: Install BEHAVIOR-1K
 # Was tracking branch feat/isaac-5.0.
-BEHAVIOR1K_COMMIT="${BEHAVIOR1K_COMMIT:-d89aae4e0e9a1de3cf8285cb9669c11d8c8bb864}"
-if [ ! -d "BEHAVIOR-1K" ]; then
-  git clone https://github.com/StanfordVL/BEHAVIOR-1K.git
-fi
-cd BEHAVIOR-1K
-git_safe_checkout_detached "." "${BEHAVIOR1K_COMMIT}" "deps/BEHAVIOR-1K"
 # Detect OS architecture to choose correct gcc/g++ packages.
-# kernel-headers pin: see the toolchain install above (evdev scan/compile header mismatch).
+# This toolchain is also needed by reconstruction CUDA extensions, so install it
+# independently of the optional simulator stack below.
 ARCH=$(uname -m)
 if [ "$ARCH" = "aarch64" ]; then
   echo "Detected aarch64 architecture. Installing gcc_linux-aarch64/gxx_linux-aarch64."
@@ -361,10 +397,21 @@ else
   echo "Detected x86_64 or other architecture. Installing gcc_linux-64/gxx_linux-64."
   mamba install -c conda-forge gcc=13 gxx=13 gcc_linux-64=13 gxx_linux-64=13 "kernel-headers_linux-64>=6.12.0" -y > /dev/null
 fi
-echo "Starting BEHAVIOR-1K setup, this may take a while..."
-./setup.sh --bddl --omnigibson --cuda-version ${CUDA_VERSION} --accept-conda-tos --accept-nvidia-eula --accept-dataset-tos > /dev/null
-echo "Installed BEHAVIOR-1K"
-cd .. # back to deps directory
+
+if [[ "${RECONSTRUCTION_ONLY}" == false ]]; then
+  BEHAVIOR1K_COMMIT="${BEHAVIOR1K_COMMIT:-d89aae4e0e9a1de3cf8285cb9669c11d8c8bb864}"
+  if [ ! -d "BEHAVIOR-1K" ]; then
+    git clone https://github.com/StanfordVL/BEHAVIOR-1K.git
+  fi
+  cd BEHAVIOR-1K
+  git_safe_checkout_detached "." "${BEHAVIOR1K_COMMIT}" "deps/BEHAVIOR-1K"
+  echo "Starting BEHAVIOR-1K setup, this may take a while..."
+  ./setup.sh --bddl --omnigibson --cuda-version ${CUDA_VERSION} --accept-conda-tos --accept-nvidia-eula --accept-dataset-tos > /dev/null
+  echo "Installed BEHAVIOR-1K"
+  cd .. # back to deps directory
+else
+  echo "Reconstruction-only: skipping BEHAVIOR-1K and OmniGibson"
+fi
 
 # Step 2.12: Install CUDA toolkit and pytorch3d
 ensure_cuda_toolkit
@@ -411,6 +458,7 @@ python -c 'import coacd, evdev, pymeshlab; print("Verified coacd, pymeshlab, and
 echo "Installed coacd, pymeshlab, and evdev"
 
 # Step 2.14: Install SAM3
+if [[ "${SIMULATION_ONLY}" == false ]]; then
 SAM3_COMMIT="${SAM3_COMMIT:-46957e47805eaa273f4aa7bbbd25a88bca9108ce}"
 if [ ! -d "sam3" ]; then
   git clone https://github.com/facebookresearch/sam3.git
@@ -429,6 +477,9 @@ cd .. # back to deps directory
 # CPUExecutionProvider (stage 6 + processing_utils.py), so the CPU build is sufficient.
 pip install "rembg[cpu]" > /dev/null
 echo "Installed rembg (CPU onnxruntime)"
+else
+  echo "Simulation-only: skipping SAM3 and rembg"
+fi
 
 # Step 2.15: Install TRELLIS2 (optional)
 if [[ ${INSTALL_TRELLIS} == true ]]; then
@@ -507,19 +558,23 @@ fi
 # echo "Installed OpenPI client"
 # cd .. # back to deps directory
 
-# step 2.17: install LeRobot
-mamba install --freeze-installed ffmpeg=7.1.1 -c conda-forge -y
-pip install --no-deps lerobot@git+https://github.com/huggingface/lerobot.git@577cd10974b84bea1f06b6472eb9e5e74e07f77a
-pip install \
-  "datasets>=2.19.0,<3" \
-  jsonlines \
-  "av>=14.2.0" \
-  cmake \
-  "deepdiff>=7.0.1,<9" \
-  draccus==0.10.0 \
-  pynput \
-  pyserial \
-  "rerun-sdk>=0.21.0,<0.23.0"
+# step 2.17: install LeRobot (application / rollout only)
+if [[ "${RECONSTRUCTION_ONLY}" == false ]]; then
+  mamba install --freeze-installed ffmpeg=7.1.1 -c conda-forge -y
+  pip install --no-deps lerobot@git+https://github.com/huggingface/lerobot.git@577cd10974b84bea1f06b6472eb9e5e74e07f77a
+  pip install \
+    "datasets>=2.19.0,<3" \
+    jsonlines \
+    "av>=14.2.0" \
+    cmake \
+    "deepdiff>=7.0.1,<9" \
+    draccus==0.10.0 \
+    pynput \
+    pyserial \
+    "rerun-sdk>=0.21.0,<0.23.0"
+else
+  echo "Reconstruction-only: skipping LeRobot application dependencies"
+fi
 
 # Finally, misc dependencies
 pip install zmq
@@ -527,6 +582,7 @@ SITE_PACKAGES="$(python -c 'import site; print(site.getsitepackages()[0])')"
 rm -rf "${SITE_PACKAGES}"/numpy "${SITE_PACKAGES}"/numpy.libs "${SITE_PACKAGES}"/numpy-*.dist-info
 pip install --no-cache-dir "numpy==1.26.4" "coverage==7.6.1" "typing_extensions>=4.15.0" "psutil==5.9.8"
 
+if [[ "${RECONSTRUCTION_ONLY}" == false ]]; then
 copy_robot_asset_from_fallback() {
   local rel_path="$1"
   local src="${ROBOT_ASSET_FALLBACK_ROOT}/deps/BEHAVIOR-1K/datasets/omnigibson-robot-assets/${rel_path}"
@@ -645,8 +701,15 @@ validate_robot_asset_file "models/franka/franka_panda/usd/franka_panda.usda" req
 validate_robot_asset_file "models/background/sky.jpg" required "models/background/sky.jpg"
 validate_robot_asset_file "models/franka/franka_robotiq/usd/franka_robotiq.usda" required "models/franka/franka_robotiq"
 validate_robot_asset_file "${YAM_REL}" optional "models/yam"
+else
+  echo "Reconstruction-only: skipping OmniGibson robot assets"
+fi
 
-install_faiss_gpu "$ENV_NAME"
+if [[ "${SIMULATION_ONLY}" == false ]]; then
+  install_faiss_gpu "$ENV_NAME"
+else
+  echo "Simulation-only: skipping FAISS"
+fi
 
 echo "Completed installation of SimFoundry environment: $ENV_NAME"
 

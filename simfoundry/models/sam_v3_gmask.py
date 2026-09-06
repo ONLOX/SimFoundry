@@ -21,6 +21,7 @@ import cv2
 import glob
 import hydra
 from hydra import initialize_config_dir
+from simfoundry.models.sam3_checkpoint import resolve_sam3_checkpoint
 
 # turn on tfloat32 for Ampere GPUs
 # https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
@@ -47,6 +48,7 @@ class SAM3(torch.nn.Module):
 
         # Load SAM model
         bpe_path = f"{SAM3_ROOT}/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
+        checkpoint_path = resolve_sam3_checkpoint()
         if video:
             assert self.device == "cuda", "Must set device=cuda when using SAM3 video model!"
             gpus_to_use = range(torch.cuda.device_count()) if n_video_devices == -1 else n_video_devices
@@ -55,6 +57,8 @@ class SAM3(torch.nn.Module):
             raw_model = build_sam3_image_model(
                 bpe_path=bpe_path,
                 device=self.device,
+                checkpoint_path=checkpoint_path,
+                load_from_HF=checkpoint_path is None,
                 enable_inst_interactivity=True,
             )
             model = Sam3Processor(

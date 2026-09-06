@@ -23,6 +23,7 @@ Per-stage values can be overridden directly, e.g. `s2_pass1.in_dir=...`.
 starts in a different working directory, so relative paths break.
 """
 import json
+import os
 import logging
 import shutil
 import subprocess
@@ -47,7 +48,7 @@ VOID_ROOT = REPO_ROOT / "deps" / "void-model"
 
 # The `void` env must already exist (`mamba env list`). We shell into it per
 # chunk via `mamba run -n void python …`, so this script can stay in the simfoundry env.
-VOID_ENV_NAME = "void"
+VOID_ENV_NAME = os.environ.get("VOID_ENV_NAME", "void")
 PASS1_SCRIPT = VOID_ROOT / "inference" / "cogvideox_fun" / "predict_v2v.py"
 PASS1_CONFIG = VOID_ROOT / "config" / "quadmask_cogvideox.py"
 
