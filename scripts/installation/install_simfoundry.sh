@@ -603,7 +603,12 @@ if [[ "${RECONSTRUCTION_ONLY}" == false ]]; then
 # (compiled cd.so from one version, md.py from another). Importing OmniGibson
 # then dies with: charset_normalizer.md has no attribute CharInfo.
 pip uninstall -y charset-normalizer >/dev/null 2>&1 || true
-pip install --force-reinstall --no-cache-dir "charset-normalizer==3.3.2"
+# Drop leftover compiled extensions. A mixed cd.so / md.py pair raises
+# AttributeError: module 'charset_normalizer.md' has no attribute 'CharInfo'.
+SITE_PACKAGES="$(python -c 'import site; print(site.getsitepackages()[0])')"
+rm -rf "${SITE_PACKAGES}/charset_normalizer" "${SITE_PACKAGES}"/charset_normalizer-*.dist-info
+# Pure-Python build avoids mypyc/Cython wheels that disagree after LeRobot/conda overlays.
+pip install --force-reinstall --no-cache-dir --no-binary charset-normalizer "charset-normalizer==3.3.2"
 python -c "import requests; from charset_normalizer import from_bytes"
 fi
 

@@ -49,6 +49,7 @@ def test_simfoundry_profiles_are_mutually_exclusive():
 def test_simfoundry_installer_repairs_charset_normalizer_before_og_import():
     text = (INSTALL_DIR / "install_simfoundry.sh").read_text()
     assert "charset-normalizer==3.3.2" in text
+    assert "--no-binary charset-normalizer" in text
     assert "download_omnigibson_robot_assets" in text
     assert "--skip-robot-assets" in text
     assert '"${SKIP_ROBOT_ASSETS}" == false' in text
