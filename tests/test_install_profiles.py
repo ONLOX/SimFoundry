@@ -29,6 +29,7 @@ def test_installer_help_lists_both_profiles():
         )
         assert "--reconstruction-only" in result.stdout
         assert "--simulation-only" in result.stdout
+        assert "--skip-robot-assets" in result.stdout
 
 
 def test_simfoundry_profiles_are_mutually_exclusive():
@@ -43,6 +44,14 @@ def test_simfoundry_profiles_are_mutually_exclusive():
     )
     assert result.returncode == 2
     assert "mutually exclusive" in result.stderr
+
+
+def test_simfoundry_installer_repairs_charset_normalizer_before_og_import():
+    text = (INSTALL_DIR / "install_simfoundry.sh").read_text()
+    assert "charset-normalizer==3.3.2" in text
+    assert "download_omnigibson_robot_assets" in text
+    assert "--skip-robot-assets" in text
+    assert '"${SKIP_ROBOT_ASSETS}" == false' in text
 
 
 def test_simulation_profile_rejects_reconstruction_envs():

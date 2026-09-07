@@ -45,6 +45,7 @@ INSTALL_TRELLIS=false
 INSTALL_ZED=false
 RECONSTRUCTION_ONLY=false
 SIMULATION_ONLY=false
+SKIP_ROBOT_ASSETS=false
 CUDA_ARCH_LIST=""
 ROBOT_ASSET_FALLBACK_ROOT=""
 
@@ -59,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         --zed) INSTALL_ZED=true; shift ;;
         --reconstruction-only) RECONSTRUCTION_ONLY=true; shift ;;
         --simulation-only) SIMULATION_ONLY=true; shift ;;
+        --skip-robot-assets) SKIP_ROBOT_ASSETS=true; shift ;;
         --cuda-arch-list) CUDA_ARCH_LIST="$2"; shift 2 ;;
         --robot-asset-fallback-root) ROBOT_ASSET_FALLBACK_ROOT="$2"; shift 2 ;;
         -h|--help)
@@ -74,6 +76,8 @@ Options:
   --zed
   --reconstruction-only       Skip BEHAVIOR-1K, OmniGibson, robot assets, and LeRobot
   --simulation-only           Skip reconstruction model dependencies; install simulation and rollout
+  --skip-robot-assets         Skip official OmniGibson robot downloads (Franka/YAM).
+                              Use when importing a robot-free reconstruction bundle.
   --robot-asset-fallback-root DIR
   --default                   Accept defaults without prompting
 EOF
@@ -109,6 +113,7 @@ fi
 echo "=== SimFoundry Environment Setup ==="
 echo "  reconstruction_only: ${RECONSTRUCTION_ONLY}"
 echo "  simulation_only:     ${SIMULATION_ONLY}"
+echo "  skip_robot_assets:   ${SKIP_ROBOT_ASSETS}"
 
 if [[ ! ${DEFAULT} == true ]]; then
   read -p "Enter environment name (default: ${env_name}): " ENV_NAME
@@ -594,6 +599,15 @@ rm -rf "${SITE_PACKAGES}"/numpy "${SITE_PACKAGES}"/numpy.libs "${SITE_PACKAGES}"
 pip install --no-cache-dir "numpy==1.26.4" "coverage==7.6.1" "typing_extensions>=4.15.0" "psutil==5.9.8"
 
 if [[ "${RECONSTRUCTION_ONLY}" == false ]]; then
+# LeRobot/datasets/requests can leave a mixed charset_normalizer install
+# (compiled cd.so from one version, md.py from another). Importing OmniGibson
+# then dies with: charset_normalizer.md has no attribute CharInfo.
+pip uninstall -y charset-normalizer >/dev/null 2>&1 || true
+pip install --force-reinstall --no-cache-dir "charset-normalizer==3.3.2"
+python -c "import requests; from charset_normalizer import from_bytes"
+fi
+
+if [[ "${RECONSTRUCTION_ONLY}" == false && "${SKIP_ROBOT_ASSETS}" == false ]]; then
 copy_robot_asset_from_fallback() {
   local rel_path="$1"
   local src="${ROBOT_ASSET_FALLBACK_ROOT}/deps/BEHAVIOR-1K/datasets/omnigibson-robot-assets/${rel_path}"
@@ -712,6 +726,9 @@ validate_robot_asset_file "models/franka/franka_panda/usd/franka_panda.usda" req
 validate_robot_asset_file "models/background/sky.jpg" required "models/background/sky.jpg"
 validate_robot_asset_file "models/franka/franka_robotiq/usd/franka_robotiq.usda" required "models/franka/franka_robotiq"
 validate_robot_asset_file "${YAM_REL}" optional "models/yam"
+elif [[ "${SKIP_ROBOT_ASSETS}" == true ]]; then
+  echo "Skipping official OmniGibson robot assets (--skip-robot-assets)."
+  echo "Import a robot-free reconstruction bundle, then attach your own robot at rollout."
 else
   echo "Reconstruction-only: skipping OmniGibson robot assets"
 fi

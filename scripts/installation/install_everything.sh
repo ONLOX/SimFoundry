@@ -23,6 +23,7 @@
 #                                                   [--env-suffix SFX]
 #                                                   [--reconstruction-only]
 #                                                   [--simulation-only]
+#                                                   [--skip-robot-assets]
 #
 #   --fresh             Remove each target env before (re)installing it (clean rebuild).
 #   --checkpoints       Also run download_checkpoints.sh at the end. OPT-IN: checkpoints
@@ -43,6 +44,9 @@
 #                       selected by --only are unchanged.
 #   --simulation-only   Install only the main simulation / rollout environment.
 #                       Cannot be combined with reconstruction envs in --only.
+#   --skip-robot-assets Skip official OmniGibson robot downloads (Franka/YAM).
+#                       Use with --simulation-only when importing a robot-free
+#                       reconstruction bundle and supplying your own robot.
 #
 # Prereqs: mamba (Miniforge) and `uv` (for 3dgrut) on PATH. The void + nerfstudio installers
 # need internet for the cu128 torch wheels; download_checkpoints needs `huggingface-cli login`
@@ -62,6 +66,7 @@ FRESH=false
 DOWNLOAD_CHECKPOINTS=false
 RECONSTRUCTION_ONLY=false
 SIMULATION_ONLY=false
+SKIP_ROBOT_ASSETS=false
 ONLY=""
 ONLY_EXPLICIT=false
 ENV_SUFFIX="${ENV_SUFFIX:-}"
@@ -75,8 +80,9 @@ while [[ $# -gt 0 ]]; do
     --env-suffix)       ENV_SUFFIX="$2"; shift 2 ;;
     --reconstruction-only) RECONSTRUCTION_ONLY=true; shift ;;
     --simulation-only)  SIMULATION_ONLY=true; shift ;;
+    --skip-robot-assets) SKIP_ROBOT_ASSETS=true; shift ;;
     -h|--help)
-      sed -n '2,46p' "$(readlink -f "${BASH_SOURCE[0]}")"; exit 0 ;;
+      sed -n '2,53p' "$(readlink -f "${BASH_SOURCE[0]}")"; exit 0 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
@@ -132,6 +138,7 @@ echo "  fresh rebuild:    ${FRESH}"
 echo "  download ckpts:   ${DOWNLOAD_CHECKPOINTS}"
 echo "  reconstruction:   ${RECONSTRUCTION_ONLY}"
 echo "  simulation:       ${SIMULATION_ONLY}"
+echo "  skip robot assets:${SKIP_ROBOT_ASSETS}"
 echo "============================================================"
 
 # conda-forge is required by 3dgrut's create_conda.sh (and harmless otherwise).
@@ -175,6 +182,9 @@ for key in "${ORDER[@]}"; do
     installer_args+=(--reconstruction-only)
   elif [[ "${key}" == "simfoundry" && "${SIMULATION_ONLY}" == true ]]; then
     installer_args+=(--simulation-only)
+  fi
+  if [[ "${key}" == "simfoundry" && "${SKIP_ROBOT_ASSETS}" == true ]]; then
+    installer_args+=(--skip-robot-assets)
   fi
   bash "${SCRIPT_DIR}/${script}" "${installer_args[@]}"
 done

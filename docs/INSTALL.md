@@ -64,7 +64,9 @@ installation profiles:
 bash scripts/installation/install_everything.sh --reconstruction-only
 
 # 4090 simulation host: only the main OmniGibson / rollout env.
-bash scripts/installation/install_everything.sh --simulation-only
+# Add --skip-robot-assets when importing a robot-free reconstruction bundle
+# and using your own robot later.
+bash scripts/installation/install_everything.sh --simulation-only --skip-robot-assets
 ```
 
 The reconstruction profile omits the legacy `any6d` environment: canonical

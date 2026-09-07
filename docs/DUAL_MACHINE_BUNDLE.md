@@ -75,12 +75,13 @@ file. Paths inside the archive are relative.
 Install only the simulation and rollout profile:
 
 ```bash
-bash scripts/installation/install_everything.sh --simulation-only
+bash scripts/installation/install_everything.sh --simulation-only --skip-robot-assets
 ```
 
 This creates only the `simfoundry` environment. It installs OmniGibson and its
 runtime dependencies but does not create DA3, VOID, Hunyuan, Nerfstudio, or
-3DGRUT environments.
+3DGRUT environments, and does not download official Franka/YAM robot assets.
+The reconstruction bundle is robot-free; attach your own robot at rollout.
 
 Copy `my_scene.tar.gz` to this host, then validate, restore, and build:
 
