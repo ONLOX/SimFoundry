@@ -300,7 +300,7 @@ class _StubVLM:
 def _stub_vlm(monkeypatch, text):
     import simfoundry.models.vlm as vlm_module
 
-    monkeypatch.setattr(vlm_module, "Gemini", lambda **kwargs: _StubVLM(text))
+    monkeypatch.setattr(vlm_module, "create_vlm", lambda *args, **kwargs: _StubVLM(text))
     monkeypatch.setattr(frame_selection, "_write_vlm_candidate_images", lambda *a, **k: ["a.png", "b.png", "c.png"])
 
 
@@ -331,10 +331,10 @@ def test_refine_with_vlm_declines_on_an_unusable_answer(tmp_path, monkeypatch, t
 def test_refine_with_vlm_survives_a_failed_call(tmp_path, monkeypatch):
     import simfoundry.models.vlm as vlm_module
 
-    def boom(**kwargs):
+    def boom(*args, **kwargs):
         raise RuntimeError("no credentials")
 
-    monkeypatch.setattr(vlm_module, "Gemini", boom)
+    monkeypatch.setattr(vlm_module, "create_vlm", boom)
     monkeypatch.setattr(frame_selection, "_write_vlm_candidate_images", lambda *a, **k: ["a.png"])
     cfg = make_cfg(tmp_path)
     idx, note = refine_with_vlm(cfg, _fake_bundle(), [7, 5], selection_cfg(cfg))

@@ -3,8 +3,8 @@
 
 """
 Train splatfacto on the VOID-cleaned background sequence using DA3-supplied
-poses + intrinsics (no COLMAP). Exports the trained splat to a PLY in DA3's
-metric-meter world frame, ready for the bridge step.
+poses + intrinsics (no COLMAP). Exports the trained splat to a PLY in the
+void-DA3 metre frame, ready for the bridge step.
 
 Two phases run in sequence:
 
@@ -35,7 +35,8 @@ Canonical invocation (see auto_bg_pipeline_README.md step 3):
       scene_name=<scene> \\
       s5_train_bg_splat.no_masks=True s5_train_bg_splat.max_num_iterations=80000 \\
       s5_train_bg_splat.method=splatfacto-big \\
-      s5_train_bg_splat.camera_optimizer_mode=SO3xR3
+      s5_train_bg_splat.camera_optimizer_mode=off \\
+      s5_train_bg_splat.use_scale_regularization=true
 Reads config from scripts/cfg/auto_bg.yaml (Hydra), section `s5_train_bg_splat`.
 """
 import json
@@ -66,6 +67,22 @@ REPO_ROOT = Path(__file__).resolve().parents[5]
 # Name of the nerfstudio env (assumed already created and on `mamba env list`).
 # Overridable via NERFSTUDIO_ENV_NAME for non-standard installs.
 NS_ENV_NAME = os.environ.get("NERFSTUDIO_ENV_NAME", "nerfstudio_simfoundry")
+
+
+def _camera_optimizer_mode(value) -> str:
+    """Return the ns-train token for camera-optimizer.mode.
+
+    YAML 1.1 (and OmegaConf) treat bare ``off`` / ``on`` as booleans, so a
+    config written as ``camera_optimizer_mode: off`` arrives here as ``False``.
+    """
+    if value is False or value == 0:
+        return "off"
+    if value is True or value == 1:
+        return "SO3xR3"
+    token = str(value).strip()
+    if token.lower() in {"false", "off", "none", "0"}:
+        return "off"
+    return token
 
 
 def build_seed_pointcloud(
@@ -405,7 +422,7 @@ def main(cfg):
     ab = REPO_ROOT / "Data" / scene / "auto_bg"
     inpainted_dir = Path(sec.inpainted_dir) if sec.inpainted_dir else ab / "void" / "pass2" / "cleaned_frames"
     masks_dir = Path(sec.masks_dir) if sec.masks_dir else ab / "void" / "pass2" / "masks"
-    da3_npz = Path(sec.da3_npz) if sec.da3_npz else ab / "da3" / "orig" / "results.npz"
+    da3_npz = Path(sec.da3_npz) if sec.da3_npz else ab / "da3" / "void" / "da" / "exports" / "npz" / "results.npz"
     processed_dir = Path(sec.processed_dir) if sec.processed_dir else ab / "splat" / "ns_data"
     base_dir = Path(sec.base_dir) if sec.base_dir else ab / "splat"
 
@@ -521,9 +538,11 @@ def main(cfg):
         "--vis", "viewer",
         "--viewer.websocket-port", str(sec.viewer_port),
         "--viewer.quit-on-train-completion", quit_on_done,
-        # camera-optimizer.mode is model-side config; must precede the
-        # dataparser subcommand boundary.
-        f"--pipeline.model.camera-optimizer.mode={sec.camera_optimizer_mode}",
+        # Model-side flags must precede the dataparser subcommand boundary.
+        # YAML 1.1 parses bare `off` as bool false; ns-train wants the token 'off'.
+        f"--pipeline.model.camera-optimizer.mode={_camera_optimizer_mode(sec.camera_optimizer_mode)}",
+        f"--pipeline.model.use-scale-regularization={'True' if sec.use_scale_regularization else 'False'}",
+        f"--pipeline.model.max-gauss-ratio={sec.max_gauss_ratio}",
     ]
     train_cmd += [
         "nerfstudio-data",

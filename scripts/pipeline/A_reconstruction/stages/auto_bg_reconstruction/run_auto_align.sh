@@ -316,10 +316,11 @@ run_gpu_locked "5 train_bg_splat" "$SIMFOUNDRY_ENV" -- \
     python scripts/pipeline/A_reconstruction/stages/auto_bg_reconstruction/5_train_bg_splat.py \
         scene_name="${SCENE}"
 
-# bridge_bg_splat_to_og.py reads the canonical orig-DA3 (s2_da/.../results.npz) + the
-# canonical s4_frame cam2world by default — both produced by the canonical reconstruction
-# and verified by the precondition. YAML defaults point --in-ply == --out-ply at
-# <scene>_bg.ply so the bridge only writes the <scene>_bg.ply.pose.json sidecar.
+# bridge_bg_splat_to_og.py reads void-DA3 (the splat's trained world) + the
+# canonical s4_frame cam2world. The camera frame of the anchor image is shared
+# with the object meshes, so void-world → cam → OG lands on the same table.
+# YAML defaults point --in-ply == --out-ply at <scene>_bg.ply so the bridge
+# only writes the <scene>_bg.ply.pose.json sidecar.
 BG_PLY="${DATA_DIR}/auto_bg/splat/export/${SCENE}_bg.ply"
 run "6 bridge_to_og" "$SIMFOUNDRY_ENV" -- \
     python scripts/pipeline/A_reconstruction/stages/auto_bg_reconstruction/6_bridge_bg_splat_to_og.py \

@@ -33,8 +33,7 @@ Inputs:
                  Pass a different path only if you want a verbatim copy + the
                  sidecar elsewhere.
   --src-npz      DA3 NPZ that the splat was trained against (defines that
-                 DA3 world). Defaults to Data/<scene>/s2_da/da/exports/npz/
-                 results.npz.
+                 DA3 world). Defaults to the void-DA3 NPZ used by step 5.
   --bridge-mode  single (same-scene; default) | umeyama (cross-scene) | auto
   --target-scene-name  scene whose s4_frame defines OG world (default: --scene-name)
 
@@ -101,7 +100,7 @@ def main(cfg):
     target_scene = sec.target_scene_name or scene
     s4_dir = REPO_ROOT / "Data" / target_scene / "s4_frame"
     s2_npz = Path(sec.src_npz).resolve() if sec.src_npz else \
-             REPO_ROOT / "Data" / scene / "s2_da" / "da" / "exports" / "npz" / "results.npz"
+             REPO_ROOT / "Data" / scene / "auto_bg" / "da3" / "void" / "da" / "exports" / "npz" / "results.npz"
     logger.info("Source DA3 NPZ (splat's world frame): %s", s2_npz)
     if not Path(s2_npz).exists():
         sys.exit(f"missing source DA3 npz (run stage 2b (2b_run_da.py), or pass s6_bridge.src_npz=): {s2_npz}")

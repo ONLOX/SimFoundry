@@ -108,9 +108,37 @@ def _bbox_center_from_box2d(box_2d, img_w, img_h):
     return (cx, cy)
 
 
+def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
+    inter = np.logical_and(a, b).sum()
+    union = np.logical_or(a, b).sum()
+    return float(inter) / float(union) if union else 0.0
+
+
+def _keep_sam3_instances(masks, scores, sam_conf, max_iou=0.8):
+    """Keep every confident SAM3 instance, dropping near-duplicate boxes."""
+    if masks is None or len(masks) == 0:
+        return []
+    scores = np.asarray(scores).reshape(-1)
+    kept = []
+    for i in np.argsort(-scores):
+        score = float(scores[i])
+        if score < sam_conf:
+            continue
+        mask = masks[i][0].astype(bool)
+        if int(mask.sum()) == 0:
+            continue
+        if any(_mask_iou(mask, prev) > max_iou for prev, _ in kept):
+            continue
+        kept.append((mask.astype(np.uint8), score))
+    return kept
+
+
 def _sam3_keyframe_masks(keyframe_pil: Image.Image, primary_names, detections, sam_conf=0.30):
-    """For each primary_name, try SAM3 text-prompt; if empty, fall back to bbox-center
-    point-prompt using the matching Gemini detection. Mirrors stage 5's pattern.
+    """Segment every instance of each prompt on the keyframe.
+
+    VOID has to erase all copies of a category (both arms, both plates). Stage 5
+    keeps only the top-scoring box because it reconstructs one object at a time;
+    taking that shortcut here leaves the unselected instance painted into the GS.
     """
     from simfoundry.models.sam_v3_gmask import SAM3
     sam3 = SAM3(confidence_threshold=sam_conf, device="cuda", video=False)
@@ -130,27 +158,28 @@ def _sam3_keyframe_masks(keyframe_pil: Image.Image, primary_names, detections, s
     for name in primary_names:
         masks, boxes, scores = sam3.predict_segmentation(pil_img=keyframe_pil, text_prompt=name)
         used_fallback = False
-        if masks is None or len(masks) == 0 or (masks.shape[0] == 1 and masks.sum() == 0):
-            # Fallback: point prompt at Gemini bbox center
+        instances = _keep_sam3_instances(masks, scores, sam_conf)
+        if not instances:
             pt = name_to_pt.get(name)
             if pt is not None:
                 logger.info("  SAM3 text empty for '%s' — falling back to point prompt at %s", name, pt)
                 masks, boxes, scores = sam3.predict_segmentation_with_point(
                     pil_img=keyframe_pil, point_coords=pt, point_labels=[1], multimask_output=False,
                 )
+                instances = _keep_sam3_instances(masks, scores, sam_conf=0.0)
                 used_fallback = True
 
-        if masks is None or len(masks) == 0:
+        if not instances:
             logger.warning("  SAM3 found nothing for '%s' (text + point both failed)", name)
             continue
-        best = int(np.argmax(scores))
-        m = masks[best][0].astype(np.uint8)
-        if m.sum() == 0:
-            logger.warning("  '%s': empty mask, skipping", name)
-            continue
-        obj_to_mask[name] = m
         tag = " (fallback point)" if used_fallback else ""
-        logger.info("  '%s'%s: mask area %d px (score %.2f)", name, tag, int(m.sum()), float(scores[best]))
+        for i, (mask, score) in enumerate(instances, start=1):
+            key = name if len(instances) == 1 else f"{name} #{i}"
+            obj_to_mask[key] = mask
+            logger.info(
+                "  '%s'%s: mask area %d px (score %.2f)",
+                key, tag, int(mask.sum()), score,
+            )
 
     del sam3
     torch.cuda.empty_cache()

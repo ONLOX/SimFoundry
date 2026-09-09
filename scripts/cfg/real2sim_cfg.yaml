@@ -100,20 +100,18 @@ s3_ground:    # env: simfoundry
   out_dir: "${root_dir}/${scene_name}/${s3_ground.out_dirname}"
   floor_categories: [desk, table, counter]
   floor_threshold: 0.5
-  allow_vlm_fallback: true
+  allow_vlm_fallback: false
   floor_tilt_threshold: 0.125
   # The canonical frame the whole reconstruction is built from: stage 3 fits the support plane
   # in it, stage 4 makes its camera the world frame, and stage 5 crops every object out of it.
-  # `auto` lets stage 3 score the candidates (see frame_selection below); an integer pins a
-  # frame, which is what the pipeline used to do unconditionally. Stage 3 records the resolved
-  # index in s3_ground/frame_selection.json and stages 4-14 read it back from there.
+  # An integer pins that subsampled-frame index. `auto` scores candidates (see frame_selection)
+  # and takes the highest heuristic score. Stage 3 records the resolved index in
+  # s3_ground/frame_selection.json and stages 4-14 read it back from there.
   img_idx: auto
   frame_selection:
-    # heuristic -- geometry/sharpness scoring only, no remote calls
-    # vlm       -- VLM chooses among every frame that passes the gates
-    # hybrid    -- heuristic short-lists vlm_top_k frames, VLM makes the final call
-    # The VLM step is fail-soft: without credentials it falls back to the heuristic winner.
-    mode: hybrid
+    # Used only when img_idx is auto. heuristic = highest score, no remote VLM.
+    # vlm / hybrid ask a VLM (vlm_model) after scoring; fail-soft to the heuristic winner.
+    mode: heuristic
     max_candidates: 24            # cap on frames scored (evenly strided) to bound SAM3 cost
     min_object_height: 0.015      # m above the support plane before geometry counts as an object
     max_object_height: 0.6        # m above the plane, to exclude walls/people behind the surface
@@ -125,7 +123,7 @@ s3_ground:    # env: simfoundry
     clipped_penalty: 0.35         # score penalty per unit fraction of object area cut off
     vlm_top_k: 4                  # frames sent to the VLM in hybrid mode
     vlm_max_side: 1024            # candidate images are downscaled to this before upload
-    vlm_model: null               # null -> inherit s3_ground.detection_model
+    vlm_model: qwen3-vl-flash     # options: qwen3-vl-flash, qwen-vl-plus, qwen3-vl-plus, qwen-vl-max; null -> inherit s3_ground.detection_model
     write_debug_sheet: true       # s3_ground/frame_selection.png, scored contact sheet
     weights:
       object_coverage: 0.40       # image fraction filled by objects on the support surface
@@ -153,9 +151,9 @@ s5_scene:     # env: simfoundry
   sam_conf_threshold: 0.35
   start_iter: null
   end_iter: null
-  force_categories: null
+  force_categories: null   # required for the default Qwen path; skips Gemini detection when set
   use_feedback: false   # If true, use rerun_feedback.json from 5b_visualize_decomposition.py
-  use_upsampled_source_image: true   # If true, seed decomposition with the removal model's upsampled source (source_padded_resized_upsampled.png). If false, use source_padded_resized.png as-is, skipping the upsample call.
+  use_upsampled_source_image: false   # If true, seed decomposition with the removal model's upsampled source (source_padded_resized_upsampled.png). If false, use source_padded_resized.png as-is, skipping the upsample call. Keep false for qwen-image-3.0.
   removal_outline_color: [0, 255, 0]
   boundary_proportion: 0.02 #0.1
   z_prune_threshold: -0.05
@@ -168,7 +166,7 @@ s5_scene:     # env: simfoundry
   crop_removal_images: true
   # vlm_model: gemini-2.5-pro     # options: gemini-2.5-pro, gemini-2.5-flash, gemini-3-pro
   detection_model: gemini-3.1-pro-preview   # options: gemini-2.5-pro, gemini-2.5-flash, gemini-3.1-pro-preview, gemini-3-flash-preview
-  removal_model: gemini-3-pro-image     # options: gemini, gemini-3-pro-image, gemini-3-pro-image, flux
+  removal_model: qwen-image-3.0     # options: qwen-image-3.0, qwen-image-3.0-pro, gemini, gemini-3-pro-image, flux
   min_detection_iterations: 3
   obj_removal_prompt_order: ["mask", "outline", "bbox"]   # options: mask, outline, bbox. For FLUX, use ["outline", "bbox"], mask is not stable.
   pda_K: 5
@@ -179,7 +177,7 @@ s6_upsample:      # env: simfoundry
   out_dirname: s6_upsample
   out_dir: "${root_dir}/${scene_name}/${s6_upsample.out_dirname}"
   sam_conf_threshold: 0.1
-  model: gemini-3-pro-image     # options: gemini, gemini-2.5-flash-image, gemini-3-pro-image, gpt, flux
+  model: qwen-image-3.0     # options: qwen-image-3.0, qwen-image-3.0-pro, gemini, gemini-2.5-flash-image, gemini-3-pro-image, gpt, flux
   validity_model: gemini
   infill: false    # If true, infill the object before upsampling
   check_valid: false  # If true, run validity check on each upsampled object
@@ -276,7 +274,7 @@ s8_pose:          # env: simfoundry
   use_foundationpose: true
   est_refine_iter: 5  # Number of refinement iterations for FoundationPose
   object_indices: null  # null = all, or [1,2] for selective streaming/reruns
-  canonicalize_front: true      # VLM front-pick; rotates the (uprighted) mesh front to +Z
+  canonicalize_front: false      # VLM front-pick; rotates the (uprighted) mesh front to +Z. Off: no remote VLM.
   front_pick_model: gemini-3.1-pro-preview
   # Fine yaw passes for tilt-baked (pixel-aligned) meshes ONLY — canonical backends land
   # exactly on the 45-degree grid and a re-pick can only move them off it.
@@ -358,7 +356,7 @@ s11_sim:          # env: simfoundry
   out_dirname: s11_sim
   out_dir: "${root_dir}/${scene_name}/${s11_sim.out_dirname}"
   vlm_model: gemini-3.1-pro-preview   # options: gemini-2.5-pro, gemini-2.5-flash, gemini-3.1-pro-preview
-  physics_mode: vlm                   # vlm | manual
+  physics_mode: manual                   # vlm | manual. manual uses s11_sim.manual_physics (no remote VLM).
   manual_physics:
     default: {mass: 0.2, friction: 0.5}  # kg and unitless coefficient
     # Keys may be raw prompts, sanitized categories, iter_N, or numeric indices.

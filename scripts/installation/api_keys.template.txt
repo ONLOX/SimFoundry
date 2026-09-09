@@ -28,3 +28,8 @@ GCLOUD_PROJECT=
 # Optional: used by the light editor's "Generate task" panel when GCLOUD_PROJECT
 # is unset; Vertex application-default credentials work as an alternative.
 GEMINI_API_KEY=
+
+# Alibaba Cloud Model Studio (百炼) key for Qwen Image.
+# Required for the default stage 5 removal / stage 6 upsample path (qwen-image-3.0).
+# Optional endpoint override: DASHSCOPE_IMAGE_ENDPOINT (must match the key's region).
+DASHSCOPE_API_KEY=

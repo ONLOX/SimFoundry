@@ -861,16 +861,23 @@ def main(cfg):
         video=False,
     )
 
-    # Object detection model: configurable via cfg.s5_scene.detection_model.
-    # Needs strong vision + structured JSON output. Uses Vertex AI Gemini and must be
-    # one of Gemini's supported model ids (DETECTION_MODELS).
-    detection_model_name = cfg.s5_scene.detection_model
-    assert_valid_key(key=detection_model_name, valid_keys=DETECTION_MODELS, name="detection model")
-    vlm_pro = Gemini(
-        project=cfg.gcloud_project,
-        location="global",
-        model=detection_model_name,
-    )
+    # Object names come from s5_scene.force_categories when set (manual prompts).
+    # The detection VLM is only constructed if that list is absent.
+    force_categories = cfg.s5_scene.force_categories
+    vlm_pro = None
+    if force_categories is None:
+        detection_model_name = cfg.s5_scene.detection_model
+        assert_valid_key(key=detection_model_name, valid_keys=DETECTION_MODELS, name="detection model")
+        vlm_pro = Gemini(
+            project=cfg.gcloud_project,
+            location="global",
+            model=detection_model_name,
+        )
+    else:
+        logger.info(
+            "Using s5_scene.force_categories; skipping VLM object detection: %s",
+            list(force_categories),
+        )
 
     # Define removal model
     removal_model_name = cfg.s5_scene.removal_model

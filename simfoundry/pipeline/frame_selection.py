@@ -33,8 +33,8 @@ asserting its way out of a run that a different frame would have handled fine.
 
 With `mode: hybrid` (the default) the heuristic short-lists the top few frames and a VLM makes
 the final call, since "is this object occluded" reads much better to a VLM than to a blob
-counter. The VLM step is fail-soft: no credentials or a failed call just keeps the heuristic
-winner.
+counter. The default VLM is Qwen (`qwen3-vl-flash`). The VLM step is fail-soft: no credentials
+or a failed call just keeps the heuristic winner.
 
 The chosen index is written to `<s3_ground.out_dir>/frame_selection.json`; every downstream
 stage reads it back through `resolve_img_idx` so the whole pipeline stays on one frame.
@@ -559,7 +559,7 @@ def refine_with_vlm(cfg, bundle: FrameBundle, shortlist: Sequence[int], sel_cfg:
     Fail-soft by design: the heuristic ranking is already a usable answer, so a missing
     credential or a flaky remote call must not take down stage 3.
     """
-    from simfoundry.models.vlm import Gemini
+    from simfoundry.models.vlm import create_vlm
     from simfoundry.utils.prompt_utils import prompt_canonical_frame_select
 
     if len(shortlist) < 2:
@@ -569,7 +569,11 @@ def refine_with_vlm(cfg, bundle: FrameBundle, shortlist: Sequence[int], sel_cfg:
         image_fpaths = _write_vlm_candidate_images(
             bundle, shortlist, cfg.s3_ground.out_dir, int(sel_cfg["vlm_max_side"]),
         )
-        vlm = Gemini(project=cfg.gcloud_project, location="global", model=sel_cfg["vlm_model"])
+        vlm = create_vlm(
+            sel_cfg["vlm_model"],
+            project=cfg.gcloud_project,
+            location="global",
+        )
         result = vlm(
             prompt=prompt_canonical_frame_select(len(shortlist)),
             image_paths=image_fpaths,

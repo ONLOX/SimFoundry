@@ -14,7 +14,12 @@ import time
 from pathlib import Path
 import hydra
 from simfoundry import CFG_DIR
-from simfoundry.pipeline.stage_utils import StageResult, bootstrap_hydra_workdir, finalize_stage
+from simfoundry.pipeline.stage_utils import (
+    StageResult,
+    bootstrap_hydra_workdir,
+    finalize_stage,
+    write_ffmpeg_concat_list,
+)
 import subprocess
 import logging
 
@@ -185,21 +190,22 @@ def main(cfg):
         logger.info("="*60)
         logger.info("splat_prep: creating input_video.mp4 from subsampled frames...")
         logger.info("="*60)
-        input_video_fpath = f"{out_dir}/input_video.mp4"
+        input_video_fpath = str(Path(out_dir).resolve() / "input_video.mp4")
         # Write a sorted frame list file so ffmpeg reads them in the right order
         # regardless of filename gaps (frame_0001, frame_0016, ...).
-        frame_list_fpath = f"{out_dir}/_splat_frame_list.txt"
+        frame_list_fpath = Path(out_dir).resolve() / "_splat_frame_list.txt"
         sorted_frames = sorted(
             f for f in os.listdir(frames_subsampled_dir) if f.lower().endswith('.png')
         )
-        with open(frame_list_fpath, "w") as fl:
-            for fname in sorted_frames:
-                fl.write(f"file '{os.path.join(frames_subsampled_dir, fname)}'\n")
-                fl.write(f"duration {1.0 / cfg.s1_video.mp4_fps}\n")
+        write_ffmpeg_concat_list(
+            frame_list_fpath,
+            [os.path.join(frames_subsampled_dir, fname) for fname in sorted_frames],
+            duration=1.0 / cfg.s1_video.mp4_fps,
+        )
         subprocess.run([
             "ffmpeg", "-y",
             "-f", "concat", "-safe", "0",
-            "-i", frame_list_fpath,
+            "-i", str(frame_list_fpath),
             "-pix_fmt", "yuv420p",
             input_video_fpath,
         ], check=True)

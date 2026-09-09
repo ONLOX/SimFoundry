@@ -25,6 +25,29 @@ class StageResult:
     additional_info: dict[str, Any] | None = None
 
 
+def write_ffmpeg_concat_list(list_path: str | Path, frame_paths: list[str | Path], duration: float) -> Path:
+    """Write an ffmpeg concat demuxer list with paths resolved against the list file.
+
+    Concat `file` entries are resolved relative to the list file's directory, not
+    the process cwd. Hydra stages chdir to `scripts/cfg`, so a repo-relative
+    `../../Data/.../frame_0001.png` gets prefixed again and ffmpeg looks for
+    `s1_video/../../Data/.../s1_video/frames_subsampled_N/frame_0001.png`.
+    Absolute paths plus `-safe 0` keep this independent of cwd.
+    """
+    list_path = Path(list_path)
+    list_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved = [str(Path(path).resolve()) for path in frame_paths]
+    if not resolved:
+        raise FileNotFoundError(f"No frames to concat into {list_path}")
+    with open(list_path, "w") as fl:
+        for path in resolved:
+            fl.write(f"file '{path}'\n")
+            fl.write(f"duration {duration}\n")
+        # The last duration is ignored unless the last file is restated.
+        fl.write(f"file '{resolved[-1]}'\n")
+    return list_path
+
+
 def bootstrap_hydra_workdir(script_file: str) -> str:
     """Switch cwd to scripts/cfg to keep Hydra path behavior stable across scripts."""
     os.chdir(CFG_DIR)

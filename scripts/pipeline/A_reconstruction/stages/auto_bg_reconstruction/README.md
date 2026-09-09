@@ -115,7 +115,9 @@ Typical Step 2 wall time on a 24 GiB GPU is around two hours, plus the canonical
 
 ## Troubleshooting
 
-- Blurry splat: confirm `splatfacto-big` and camera optimizer `SO3xR3` are enabled.
+- Needle / starburst splat: confirm scale regularization is on and `camera_optimizer_mode=off`.
+- Two desks / ghost table: poses, depth and the seed PLY must all be void-DA3. Mixing orig-DA3 cameras with void RGB/depth paints a second surface.
+- Blurry splat: confirm `splatfacto-big` and depth loss are enabled.
 - Floaters above a flat surface: confirm depth loss is enabled and try increasing `depth_loss_mult`.
 - Ghost objects remain after VOID: increase guidance scale or choose a more accurate `--floor-category`.
 - DA3 scale drift: refilm with smoother camera motion or increase frame overlap.

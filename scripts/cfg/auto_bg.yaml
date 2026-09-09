@@ -68,8 +68,8 @@ s1_quadmask:                                      # env: simfoundry — generate
   keyframe_idx: 0                                 # Which subsampled frame indexes the mask prompt
   floor_category: "${floor_category}"
   gcloud_project: "${gcloud_project}"
-  gemini_model: gemini-3-pro-image  # Used to identify tabletop objects to mask out (Vertex Gemini; must support IMAGE modality)
-  manual_objects: null                            # Optional names; bypasses Gemini object proposal
+  gemini_model: gemini-3-pro-image  # Only used when manual_objects is null
+  manual_objects: null                            # Object names to mask out of the GS; pass this instead of Gemini proposal
   sam_conf: 0.30                                  # SAM3 detection threshold
   mask_dilate_px: 12                              # Dilation kernel on the union mask (pixels)
   mp4_fps: "${void_mp4_fps}"
@@ -163,7 +163,9 @@ s5_train_bg_splat:                                # env: simfoundry — train_bg
   # Inputs
   inpainted_dir: "${auto_bg_dir}/void/pass2/cleaned_frames"
   masks_dir: null                                 # SAM3 masks; canonical run uses --no-masks
-  da3_npz: "${orig_da3_npz}"                      # poses (orig DA3 world = canonical s2_da)
+  # Poses, depth and (via seed.ply) the seed cloud must share one DA3 world.
+  # Mixing orig-DA3 cameras with void RGB/depth paints a second desk.
+  da3_npz: "${void_da3.out_npz}"
   depth_da3_npz: "${void_da3.out_npz}"         # depth GT (matches the cleaned RGB used as training GT)
   seed_ply_path: "${s4_seed_ply.out_ply}"
   no_seed_ply: false                              # If true, splatfacto falls back to random init
@@ -176,7 +178,13 @@ s5_train_bg_splat:                                # env: simfoundry — train_bg
   # Training
   method: splatfacto-big                          # options: splatfacto, splatfacto-big
   max_num_iterations: 80000                       # Canonical recipe; ns-train default is 30000
-  camera_optimizer_mode: SO3xR3                   # options: off, SO3xR3, SE3 — SO3xR3 absorbs DA3 pose error + void/orig DA3 offset
+  # off keeps the splat in orig-DA3 so the step-6 bridge is valid. SO3xR3/SE3
+  # absorb void/orig pose error but leave the exported PLY off the DA3 frame.
+  camera_optimizer_mode: "off"                    # quoted: YAML 1.1 treats bare off as bool false
+  # PhysGaussian regulariser; without it splatfacto grows needle-scale gaussians
+  # in unseen directions (the SuperSplat / Isaac starburst).
+  use_scale_regularization: true
+  max_gauss_ratio: 10.0                           # only used when use_scale_regularization is true
   # Seed PLY (if no --seed-ply-path)
   seed_conf_min: 2.0
   seed_max_points: 200000
@@ -192,7 +200,7 @@ s6_bridge:                                        # env: simfoundry — bridge_b
   anchor_row: null                                # null -> parse from s4_frame's image_<N>_cam2world.npy
   in_ply: "${auto_bg_dir}/splat/export/${scene_name}_bg.ply"
   out_ply: "${s6_bridge.in_ply}"                  # Same path -> writes only the .pose.json sidecar, no PLY byte-copy
-  src_npz: null                                   # null -> Data/<scene>/s2_da/da/exports/npz/results.npz (canonical DA3)
+  src_npz: "${void_da3.out_npz}"                   # splat is trained in void-DA3; objects still use orig→OG via cam2world
 
 s7_build_assets:                                  # env: simfoundry — build_og_scene_assets.py
   rerun: true

@@ -11,7 +11,8 @@ This guide covers the standard SimFoundry setup: environments, checkpoints, serv
 - ~250 GB of free disk space for a full install (conda envs ≈ 100 GB, `deps/` ≈ 82 GB of
   which the VOID model alone is 41 GB, Hugging Face cache ≈ 12 GB, plus checkpoints)
 - Hugging Face account for gated models such as SAM3, and DINOv3 for the optional `pixal3d` mesh backend
-- Google Cloud project with the Vertex AI API and billing enabled — the pipeline's VLM stages (reconstruction, articulation, and B augmentation) run on Vertex AI (Gemini). Authenticate with `gcloud auth application-default login`
+- Alibaba Cloud Model Studio key (`DASHSCOPE_API_KEY`) — stage 5 object removal and stage 6 crop upsample default to Qwen Image (`qwen-image-3.0`). See [QWEN_MANUAL_RECONSTRUCTION.md](QWEN_MANUAL_RECONSTRUCTION.md)
+- Google Cloud project with the Vertex AI API and billing enabled — remaining VLM stages (frame selection, object detection unless `force_categories` is set, articulation, and B augmentation) run on Vertex AI (Gemini). Authenticate with `gcloud auth application-default login`
 - ZED SDK only if you plan to use ZED capture
 
 VRAM:
@@ -200,7 +201,12 @@ installed into the `simfoundry` env by `install_simfoundry.sh`.
 
 ## 3. Log In To Services
 
-The pipeline's VLM stages (reconstruction 3/5/6/10 and B augmentation) run on
+Stage 5 object removal and stage 6 crop upsample default to **Qwen Image**
+(`qwen-image-3.0`). Export `DASHSCOPE_API_KEY` (or put it in
+`scripts/installation/api_keys.txt`). Endpoint and region notes are in
+[QWEN_MANUAL_RECONSTRUCTION.md](QWEN_MANUAL_RECONSTRUCTION.md).
+
+The remaining VLM stages (reconstruction 3/5 detection/10 and B augmentation) run on
 **Google Cloud Vertex AI**. First, setup a [gcloud project](https://console.cloud.google.com/welcome/new) and then enable [Vertex AI](https://docs.vectorize.io/build-deploy/external-service-setup/how-to/google-vertex-ai/create-a-gcp-service-account-for-google-vertex-ai/).
 Then, authenticate and set your project:
 
@@ -226,13 +232,14 @@ Non-interactive login reads keys from a file:
 
 ```bash
 cp scripts/installation/api_keys.template.txt scripts/installation/api_keys.txt
-# Fill in scripts/installation/api_keys.txt (at minimum HF_TOKEN and GCLOUD_PROJECT). It is ignored by git.
+# Fill in scripts/installation/api_keys.txt (at minimum HF_TOKEN, DASHSCOPE_API_KEY, and GCLOUD_PROJECT). It is ignored by git.
 bash scripts/installation/login_services.sh --default
 ```
 
 Minimum service setup for the main (A reconstruction) pipeline:
 
 ```bash
+export DASHSCOPE_API_KEY='sk-your-key'
 export GCLOUD_PROJECT=<your-gcp-project>
 gcloud auth application-default login
 hf auth login

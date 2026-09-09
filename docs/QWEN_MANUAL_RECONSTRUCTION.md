@@ -1,11 +1,10 @@
 # Qwen + manual reconstruction
 
-This profile runs reconstruction without a Google Gemini or Vertex AI account:
-
-- object names are supplied manually;
-- Qwen Image edits the scene and improves object crops;
-- rigid-object mass and friction are supplied manually;
-- Gemini-based validation and front selection are disabled.
+Normal reconstruction uses Qwen only for stage 5 object removal and stage 6 crop
+upsample (`qwen-image-3.0`). Object names are supplied with
+`s5_scene.force_categories`. Pin the reconstruction frame with
+`s3_ground.img_idx=<N>`, or leave it `auto` to take the highest heuristic score.
+Front-pick, validity, and physics stay off the Gemini VLM.
 
 SAM3 and the local geometry models are still required.
 
@@ -41,22 +40,15 @@ mamba run -n simfoundry python \
   scripts/pipeline/A_reconstruction/run_reconstruction.py \
   --exclude 13,14 \
   --skip-successful \
-  'scene_name=fruits_example' \
-  "s1_video.video_fpath=$PWD/docs/assets/example_videos/Fruits.mp4" \
+  'scene_name=bottle_box' \
+  "s1_video.video_fpath=$PWD/docs/assets/example_videos/bottle-box.mp4" \
   's1_video.splat_prep=true' \
   's1_video.n_subsampled_frames=400' \
   's1_video.target_w=672' \
   's1_video.target_h=384' \
-  's3_ground.frame_selection.mode=heuristic' \
-  's3_ground.allow_vlm_fallback=false' \
-  's5_scene.force_categories=["green plate","orange fruit","red apple","orange plate","banana","pear"]' \
-  's5_scene.removal_model=qwen-image-3.0' \
-  's5_scene.use_upsampled_source_image=false' \
-  's6_upsample.model=qwen-image-3.0' \
-  's6_upsample.check_valid=false' \
-  's8_pose.canonicalize_front=false' \
-  's11_sim.physics_mode=manual' \
-  '+s11_sim.manual_physics.overrides={green_plate:{mass:0.10,friction:0.5},orange_fruit:{mass:0.15,friction:0.5},red_apple:{mass:0.18,friction:0.5},orange_plate:{mass:0.10,friction:0.5},banana:{mass:0.12,friction:0.5},pear:{mass:0.18,friction:0.5}}'
+  's3_ground.img_idx=0' \
+  's5_scene.force_categories=["clear water bottle","open cardboard box"]' \
+  '+s11_sim.manual_physics.overrides={clear_water_bottle:{mass:0.10,friction:0.8},open_cardboard_box:{mass:0.5,friction:0.6}}'
 ```
 
 `force_categories` should contain visible, individually removable objects. Keep the order

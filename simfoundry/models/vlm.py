@@ -810,6 +810,25 @@ class Gemini(VLM_API):
         return images
 
 
+def create_vlm(model, project=None, location="global", **kwargs):
+    """Construct the VLM client for `model` (Qwen VL or Gemini)."""
+    from simfoundry.models.qwen_vlm import QwenVL
+
+    if model in QwenVL.VERSIONS:
+        qwen_kwargs = {
+            key: kwargs[key]
+            for key in ("api_key", "endpoint", "timeout_s", "session")
+            if key in kwargs
+        }
+        return QwenVL(model=model, **qwen_kwargs)
+    gemini_kwargs = {
+        key: kwargs[key]
+        for key in ("verbose", "timeout_ms", "api_key", "backend")
+        if key in kwargs
+    }
+    return Gemini(project=project, location=location, model=model, **gemini_kwargs)
+
+
 class Imagen3(VLM_API):
     """
     Class for interfacing with supported Imagen3 models

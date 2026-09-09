@@ -194,8 +194,8 @@ def main(cfg):
 
     # Every stage from here to 13 reconstructs the scene from this one frame, so a bad choice
     # (blurry, shot from far away, objects occluding each other) caps the quality of all of
-    # them. `img_idx: auto` scores the candidates and commits the winner to disk for the
-    # downstream stages; an explicit integer still pins the frame.
+    # them. An explicit integer pins the frame; `img_idx: auto` takes the highest heuristic
+    # score and writes it to frame_selection.json for the downstream stages.
     if is_auto_img_idx(cfg.s3_ground.img_idx):
         selection = select_canonical_frame(cfg, sam3)
         img_idx = selection.selected_idx

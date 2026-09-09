@@ -4,12 +4,13 @@
 """
 Build a clean-tabletop seed PLY for splatfacto from VOID-frame DA3.
 
-Why: training transforms.json uses orig-frame DA3 poses (real pixels = stable
-poses), but the orig-frame DA3 pointcloud bakes in the objects we just spent
-Pass 1+2 removing. Void-frame DA3 gives a clean pointcloud but lives in its own
-world. This script aligns the two via Umeyama on the camera centers (rigid; DA3
-metric depth means no scale gap) and exports the clean-table cloud in orig-DA3
-world coordinates so splatfacto can use it as the seed.
+Training uses void RGB, void poses and void depth, so the seed stays in
+void-DA3. Mapping it into orig-DA3 (Umeyama on camera centres only) used to
+leave an orientation residual; splatfacto then painted a second desk.
+
+Umeyama against orig-DA3 is still logged as a diagnostic — it is not baked
+into the PLY. The step-6 bridge maps void-DA3 → OG through the same
+canonical-frame cam2world the object meshes use.
 
 Reads config from scripts/cfg/auto_bg.yaml (Hydra), section `s4_seed_ply`.
 Run from simfoundry env (Hydra override syntax):
@@ -59,14 +60,19 @@ def main(cfg):
     centers_orig = camera_centers_from_world2cam(ext_orig)
     centers_void = camera_centers_from_world2cam(ext_void)
     T_v2o, _ = umeyama_alignment(centers_void, centers_orig, with_scale=False)
-    logger.info("Umeyama rigid void→orig estimated:")
+    logger.info("Umeyama rigid void→orig (diagnostic only, not applied to the seed):")
     logger.info("  R det = %+.6f (must be +1)", float(np.linalg.det(T_v2o[:3, :3])))
     logger.info("  t = [% .4f % .4f % .4f]", *T_v2o[:3, 3])
-    # Residual after alignment, sanity check
     aligned = (centers_void @ T_v2o[:3, :3].T) + T_v2o[:3, 3]
     res = np.linalg.norm(aligned - centers_orig, axis=1)
     logger.info("  cam-center residual: mean=%.4fm median=%.4fm max=%.4fm",
                 res.mean(), np.median(res), res.max())
+    if float(res.max()) > 0.05:
+        logger.warning(
+            "void/orig camera centres differ by up to %.3fm after a rigid fit. "
+            "Training stays in void-DA3 so this residual does not paint a second desk.",
+            float(res.max()),
+        )
 
     intr_void = void["intrinsics"]   # (N,3,3)
     depth_void = void["depth"]       # (N,H,W)
@@ -92,9 +98,7 @@ def main(cfg):
         y_cam = (vv - K[1, 2]) * z / K[1, 1]
         cam_pts = np.stack([x_cam, y_cam, z], axis=1)
         world_pts_void = cam_pts @ T_c2w_void[:3, :3].T + T_c2w_void[:3, 3]
-        # Void→orig world
-        world_pts_orig = world_pts_void @ T_v2o[:3, :3].T + T_v2o[:3, 3]
-        chunks_xyz.append(world_pts_orig.astype(np.float32))
+        chunks_xyz.append(world_pts_void.astype(np.float32))
         chunks_rgb.append(img_void[i][keep])
 
     xyz = np.concatenate(chunks_xyz, axis=0)
