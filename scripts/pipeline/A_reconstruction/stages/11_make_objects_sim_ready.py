@@ -238,6 +238,7 @@ def import_rigid_scene_object(
         dataset_root=out_dir,
         collision_method=rigid_collision_method,
         hull_count=cfg.s11_sim.hull_count,
+        collision_max_faces=cfg.s11_sim.get("collision_max_faces", 4000),
         up_axis="y",
         scale=rigid_scale,
         check_scale=False,
@@ -483,6 +484,7 @@ def main(cfg):
                 scale=tf_scale,
                 collision_method=cfg.s11_sim.get("collision_method", "coacd"),
                 hull_count=cfg.s11_sim.hull_count,
+                collision_max_faces=cfg.s11_sim.get("collision_max_faces", 4000),
                 # up_axis="z" is default - no rotation needed since mobility.urdf already works correctly
                 overwrite=True,
                 apply_base_rotation=True,

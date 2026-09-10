@@ -53,6 +53,23 @@ from scene_io import (  # noqa: E402
 # Purposes that exist for physics or debugging rather than display.
 SKIP_PURPOSES = {"guide", "proxy"}
 
+
+def _is_collision_prim(prim):
+    """True when *prim* is a physics collider, including purpose=guide meshes.
+
+    The visual proxy skips guide/invisible prims, which is why collision never
+    showed in the editor: OmniGibson authors colliders that way. Path and
+    UsdPhysics APIs both count; usd-core may not ship UsdPhysics.
+    """
+    path = prim.GetPath().pathString.lower()
+    if "collision" in path:
+        return True
+    try:
+        from pxr import UsdPhysics
+    except ImportError:
+        return False
+    return prim.HasAPI(UsdPhysics.MeshCollisionAPI) or prim.HasAPI(UsdPhysics.CollisionAPI)
+
 # Most vertices a face-varying mesh may grow to when split so glTF can carry
 # its UVs; past this the object is emitted untextured. Counted against the
 # distinct (point, uv) triples actually needed.
@@ -507,6 +524,53 @@ def load_visual_scene(usd_path, allow_texture=True, joint_pose=None):
     return out, verts, faces, textured, failures
 
 
+def load_collision_scene(usd_path, joint_pose=None):
+    """Load physics collision meshes, including guide/invisible colliders.
+
+    Same bake as :func:`load_visual_scene` (stage-root frame, joint correction)
+    so the overlay sits on the visual proxy without a second transform.
+
+    Args:
+        usd_path (str or Path): USD file to read.
+        joint_pose (robot_pose.RobotJointPose or None): Solved articulation.
+
+    Returns:
+        tuple[trimesh.Scene or None, int, int]: scene, verts, faces. ``None``
+            when the asset has no collision prims (a splat room, visual-only).
+    """
+    stage = usd_cache.open_stage(usd_path)
+    if stage is None:
+        return None, 0, 0
+
+    cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    out = trimesh.Scene()
+    verts = faces = 0
+    usd_dir = Path(usd_path).parent
+    default_prim_path = stage.GetDefaultPrim().GetPath() if stage.HasDefaultPrim() else None
+    for prim in stage.Traverse(Usd.TraverseInstanceProxies()):
+        if default_prim_path and not prim.GetPath().HasPrefix(default_prim_path):
+            continue
+        if not (prim.IsA(UsdGeom.Mesh) or prim.IsA(UsdGeom.Cube)):
+            continue
+        if not _is_collision_prim(prim):
+            continue
+        correction = None if joint_pose is None else joint_pose.correction_for(prim.GetPath())
+        try:
+            geom = _prim_to_trimesh(prim, cache, usd_dir, allow_texture=False, correction=correction)
+        except Exception as e:
+            print(f"      ! collision {prim.GetPath()}: {type(e).__name__}: {e}")
+            continue
+        if geom is None or len(geom.faces) == 0:
+            continue
+        verts += len(geom.vertices)
+        faces += len(geom.faces)
+        out.add_geometry(geom, node_name=node_name_for(prim.GetPath()))
+
+    if not out.geometry:
+        return None, 0, 0
+    return out, verts, faces
+
+
 def native_extent(geom):
     """The asset's bounding box at scale 1, in its own frame.
 
@@ -651,11 +715,12 @@ def build_proxy(usd_path, out_dir, glb_name, textures=True, joint_pose=None,
             room is read.
 
     Returns:
-        dict: ``glb``, ``splat``, ``status``, ``error``, ``textured``, ``verts``,
-        ``faces``, ``upAxis``, ``metersPerUnit``, ``nativeSize``,
-        ``nativeCentre``, ``scaleFidelity``, ``prim_failures``,
+        dict: ``glb``, ``splat``, ``collisionGlb``, ``status``, ``error``,
+        ``textured``, ``verts``, ``faces``, ``upAxis``, ``metersPerUnit``,
+        ``nativeSize``, ``nativeCentre``, ``scaleFidelity``, ``prim_failures``,
         ``sourceMtimeNs``. ``glb`` is None and ``status`` is ``"error"`` when
-        the USD has no convertible visible geometry.
+        the USD has no convertible visible geometry. ``collisionGlb`` is the
+        orange overlay the editor toggles; None when the USD has no colliders.
     """
     usd_path = Path(usd_path)
     out_dir = Path(out_dir)
@@ -672,7 +737,8 @@ def build_proxy(usd_path, out_dir, glb_name, textures=True, joint_pose=None,
             # An unreadable room is an error row, exactly as a USD with no
             # visible geometry is.
             return {
-                "glb": None, "splat": None, "status": "error", "error": str(e),
+                "glb": None, "splat": None, "collisionGlb": None,
+                "status": "error", "error": str(e),
                 "prim_failures": [], "textured": False, "verts": 0, "faces": 0,
                 "nativeSize": None, "nativeCentre": None, "scaleFidelity": None,
             }
@@ -683,13 +749,21 @@ def build_proxy(usd_path, out_dir, glb_name, textures=True, joint_pose=None,
         if failures:
             error += f" ({len(failures)} prim(s) failed to convert)"
         return {
-            "glb": None, "splat": None, "status": "error", "error": error,
+            "glb": None, "splat": None, "collisionGlb": None,
+            "status": "error", "error": error,
             "prim_failures": failures, "textured": False, "verts": 0, "faces": 0,
             # Every key the docstring promises, on the failure path too.
             "nativeSize": None, "nativeCentre": None, "scaleFidelity": None,
         }
 
     _write_atomic(out_dir / glb_name, geom.export(file_type="glb"))
+
+    collision_name = None
+    collision, cverts, cfaces = load_collision_scene(usd_path, joint_pose)
+    if collision is not None:
+        collision_name = str(Path(glb_name).with_name(Path(glb_name).stem + ".collision.glb"))
+        _write_atomic(out_dir / collision_name, collision.export(file_type="glb"))
+        print(f"      collision {cverts} verts {cfaces} tris -> {collision_name}")
 
     native_size, native_centre = native_extent(geom)
 
@@ -699,6 +773,7 @@ def build_proxy(usd_path, out_dir, glb_name, textures=True, joint_pose=None,
         # Present-but-null so a browser can branch on which kind of proxy an
         # entry carries.
         "splat": None,
+        "collisionGlb": collision_name,
         # Recorded, not applied: USD references do not rescale authored points
         # for a referenced layer's stage metadata, and leaving geometry raw
         # matches OmniGibson's USD reference path.
@@ -824,6 +899,7 @@ def extract(scene_json, out_dir, robot_asset_dir, textures=True, dataset_dir=Non
             "joints": record["joints"],
             "glb": None,
             "splat": None,
+            "collisionGlb": None,
             "position": record["position"],
             "orientation": record["orientation"],
             "scale": record["scale"],

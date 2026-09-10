@@ -637,23 +637,71 @@ def simplify_convex_hull(tm, max_vertices=60, max_faces=128):
     ).convex_hull
 
 
+def _decimate_collision_mesh(tm, max_faces=4000):
+    """Reduce a render mesh so PhysX SDF / triangle collision stays cheap.
+
+    TRELLIS visuals are tens of thousands of triangles. Collision does not
+    need that density; quadric collapse keeps the silhouette (and any cavity)
+    without the convex-hull step that would fill an open box.
+
+    Args:
+        tm (trimesh.Trimesh): Mesh to simplify. Not required to be a volume.
+        max_faces (int): Stop once the mesh is at or below this many faces.
+
+    Returns:
+        trimesh.Trimesh: A copy, possibly decimated. Never a convex hull.
+    """
+    mesh = tm.copy()
+    if len(mesh.faces) <= max_faces:
+        return mesh
+    ms = pymeshlab.MeshSet()
+    kwargs = dict(vertex_matrix=mesh.vertices, face_matrix=mesh.faces)
+    if mesh.vertex_normals is not None and len(mesh.vertex_normals) == len(mesh.vertices):
+        kwargs["v_normals_matrix"] = mesh.vertex_normals
+    ms.add_mesh(pymeshlab.Mesh(**kwargs))
+    target = max_faces
+    while len(ms.current_mesh().face_matrix()) > max_faces and target > 8:
+        ms.apply_filter("meshing_decimation_quadric_edge_collapse", targetfacenum=target)
+        next_target = max(8, target // 2)
+        if next_target == target:
+            break
+        target = next_target
+    reduced = ms.current_mesh()
+    return trimesh.Trimesh(
+        vertices=reduced.vertex_matrix(),
+        faces=reduced.face_matrix(),
+        process=False,
+    )
+
+
 def generate_collision_meshes(
-    trimesh_mesh, method="coacd", hull_count=32, discard_not_volume=True, error_handling=False
+    trimesh_mesh, method="coacd", hull_count=32, discard_not_volume=True, error_handling=False,
+    max_faces=4000,
 ):
     """
-    Generates a set of collision meshes from a trimesh mesh using CoACD.
+    Generates collision meshes from a visual trimesh.
 
     Args:
         trimesh_mesh (trimesh.Trimesh): The trimesh mesh to generate the collision mesh from.
-        method (str): Method to generate collision meshes. Valid options are {"coacd", "convex"}
+        method (str): {"visual", "coacd", "convex"}. ``visual`` copies the
+            render mesh (optionally decimated) so a hollow container stays
+            hollow. ``coacd`` / ``convex`` produce convex hulls PhysX can
+            cook without SDF.
         hull_count (int): If @method="coacd", this sets the max number of hulls to generate
         discard_not_volume (bool): If @method="coacd" and set to True, this discards any generated hulls
             that are not proper volumes
         error_handling: If true, will run coacd_runner.py and handle the coacd assertion fault by using convex hull instead
+        max_faces (int): Face budget for ``method="visual"`` before PhysX SDF.
 
     Returns:
         List[trimesh.Trimesh]: The collision meshes.
     """
+    # Follow the visual mesh. CoACD's convex pieces fill cavities or leave
+    # paper-thin walls PhysX's contact offset ignores; a closed thin shell
+    # also trips the volume-ratio shortcut below and becomes one solid hull.
+    if method == "visual":
+        return [_decimate_collision_mesh(trimesh_mesh, max_faces=max_faces)]
+
     # error_handling = False
     # If the mesh is convex or the mesh is a proper volume and similar to its convex hull, simply return that directly
     if trimesh_mesh.is_convex or (
@@ -1122,6 +1170,7 @@ def generate_urdf_for_mesh(
     mdl,
     collision_method=None,
     hull_count=32,
+    collision_max_faces=4000,
     up_axis="z",
     scale=1.0,
     check_scale=False,
@@ -1139,8 +1188,9 @@ def generate_urdf_for_mesh(
         obj_dir: Output directory
         category: Category name for the object
         mdl: Model name
-        collision_method: Method for generating collision meshes ("convex", "coacd", or None)
+        collision_method: Method for generating collision meshes ("visual", "convex", "coacd", or None)
         hull_count: Maximum number of convex hulls for COACD method
+        collision_max_faces: Face budget when collision_method is "visual"
         up_axis: Up axis for the model ("y" or "z")
         scale: User choice scale, will be overwritten if check_scale and rescale
         check_scale: Whether to check mesh size based on heuristic
@@ -1186,7 +1236,8 @@ def generate_urdf_for_mesh(
         collision_meshes = []
         if collision_method is not None:
             collision_meshes = generate_collision_meshes(
-                visual_mesh, method=collision_method, hull_count=hull_count, error_handling=True
+                visual_mesh, method=collision_method, hull_count=hull_count,
+                error_handling=True, max_faces=collision_max_faces,
             )
 
         # Add to links dictionary as a single link named "base_link"
@@ -1237,6 +1288,7 @@ def generate_urdf_for_mesh(
                         hull_count=hull_count,
                         discard_not_volume=True,
                         error_handling=True,
+                        max_faces=collision_max_faces,
                     )
 
                 # Add to links dictionary with original transform
@@ -1271,6 +1323,7 @@ def generate_urdf_for_mesh(
                                 hull_count=hull_count,
                                 discard_not_volume=True,
                                 error_handling=True,
+                                max_faces=collision_max_faces,
                             )
 
                         # Add to links dictionary with original transform
@@ -1728,7 +1781,7 @@ def import_custom_object(
     category: str,
     model: str,
     dataset_root: str,
-    collision_method: Literal["coacd", "convex", "none"],
+    collision_method: Literal["visual", "coacd", "convex", "none"],
     hull_count: int,
     up_axis: Literal["z", "y"],
     scale: Union[np.ndarray, int],
@@ -1737,6 +1790,7 @@ def import_custom_object(
     overwrite: bool,
     n_submesh: int,
     mass: Optional[float] = None,
+    collision_max_faces: int = 4000,
 ):
     """
     Imports a custom-defined object asset into an OmniGibson-compatible USD format and saves the imported asset
@@ -1764,7 +1818,8 @@ def import_custom_object(
             model,
             collision_method,
             hull_count,
-            up_axis,
+            collision_max_faces=collision_max_faces,
+            up_axis=up_axis,
             scale=scale,
             check_scale=check_scale,
             rescale=rescale,
@@ -1870,8 +1925,9 @@ def import_articulated_object(
     model: str,
     dataset_root: str,
     scale: float = 1.0,
-    collision_method: Literal["coacd", "convex", "none"] = "coacd",
+    collision_method: Literal["visual", "coacd", "convex", "none"] = "coacd",
     hull_count: int = 32,
+    collision_max_faces: int = 4000,
     up_axis: Literal["z", "y"] = "z",
     apply_base_rotation: bool = True,
     overwrite: bool = True,
@@ -2082,6 +2138,7 @@ def import_articulated_object(
                 method=collision_method_actual,
                 hull_count=hull_count,
                 error_handling=True,
+                max_faces=collision_max_faces,
             )
             
             # Add collision elements

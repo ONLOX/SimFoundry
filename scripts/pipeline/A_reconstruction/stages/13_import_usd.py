@@ -141,6 +141,21 @@ def main(cfg):
             else:
                 logger.warning(f"USD file not found for opacity threshold: {usd_path}")
 
+        approximation = cfg.s13_usd.get("collision_approximation", "auto")
+        if approximation == "auto":
+            # Visual-mesh colliders must not be re-hulled; CoACD pieces already are hulls.
+            s11_method = cfg.s11_sim.get("collision_method", "coacd")
+            approximation = "sdf" if s11_method == "visual" else None
+        if approximation:
+            if os.path.exists(usd_path):
+                logger.info(f"Setting collision approximation for {obj_name}: {approximation}")
+                subprocess.run([
+                    "python", resolve_pipeline_script("set_usd_collision_approximation.py"),
+                    usd_path, "--approximation", str(approximation),
+                ], check=True)
+            else:
+                logger.warning(f"USD file not found for collision approximation: {usd_path}")
+
         # The importer writes into the shared BEHAVIOR dataset folder; keep a copy of the
         # finished asset (post reparent/opacity) with the scene's own outputs as well.
         dataset_obj_dir = os.path.join(

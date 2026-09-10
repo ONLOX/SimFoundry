@@ -363,8 +363,11 @@ s11_sim:          # env: simfoundry
     overrides: {}
   object_indices: null
   parallel_workers: 2
-  collision_method: coacd
+  # visual = the render mesh (decimated), so an open box stays a cavity.
+  # coacd / convex fill that cavity or leave paper-thin walls PhysX ignores.
+  collision_method: visual
   hull_count: 32
+  collision_max_faces: 4000
   n_submesh: 10
 s12_physics:      # env: simfoundry
   rerun: true
@@ -382,6 +385,10 @@ s13_usd: #env b1k
   # stage 11 writes (map_Pm/map_Pr) reach the USD. Objects whose base color carries real
   # alpha keep the URDF importer's OmniPBR_Opacity materials for the opacity pass above.
   asset_pipeline_materials: true
+  # PhysX approximation on imported collision meshes. auto: sdf when s11 used
+  # visual (follow the render mesh, keep cavities); otherwise leave the
+  # importer's convexHull (correct for CoACD pieces).
+  collision_approximation: auto
 s14_og:
   rerun: true
   out_dirname: s14_og

@@ -67,7 +67,7 @@ def parse_args(argv=None):
     parser.add_argument("--category", required=True)
     parser.add_argument("--model", required=True, help="6 alphabetic characters, unique in the dataset")
     parser.add_argument("--collision-method", default="none",
-                        help="'none', 'coacd' or 'convex'. 'none' is passed through as None.")
+                        help="'none', 'visual', 'coacd' or 'convex'. 'none' is passed through as None.")
     parser.add_argument("--hull-count", type=int, default=32)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--keep-instanceable", action="store_true",

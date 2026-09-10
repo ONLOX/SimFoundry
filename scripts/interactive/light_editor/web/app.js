@@ -192,6 +192,8 @@ gizmo.getRaycaster().layers.enable(LAYER_OVERLAY);
 markAsOverlay(gizmo);
 
 const objects = new Map();         // name -> { name, group, entry, initial }
+// Collision overlay is a view setting, like bounding boxes: off until asked.
+let collisionOn = false;
 
 // --- selection -------------------------------------------------------------
 // `selection` is the set the group operations act on; `selected` is its most
@@ -660,6 +662,39 @@ async function instantiate(entry) {
     rec.loadError = err.message;
     console.warn(`failed to load ${entry.glb}`, err);
   }
+
+  rec.collisionRoot = new THREE.Group();
+  rec.collisionRoot.name = `${entry.name}__collision`;
+  rec.collisionRoot.visible = collisionOn;
+  inner.add(rec.collisionRoot);
+  if (entry.collisionGlb) {
+    try {
+      const cgltf = await gltfLoader.loadAsync(`./data/${entry.collisionGlb}`);
+      const fill = new THREE.MeshBasicMaterial({
+        color: 0xff7a1a, transparent: true, opacity: 0.28,
+        depthWrite: false, side: THREE.DoubleSide,
+      });
+      const wire = new THREE.MeshBasicMaterial({
+        color: 0xff9a3c, wireframe: true, transparent: true, opacity: 0.95,
+        depthWrite: false,
+      });
+      cgltf.scene.traverse((child) => {
+        if (!child.isMesh) return;
+        child.userData.owner = entry.name;
+        child.userData.collisionOverlay = true;
+        child.material = fill;
+        const outline = new THREE.Mesh(child.geometry, wire);
+        outline.userData.collisionOverlay = true;
+        outline.raycast = () => {};
+        child.add(outline);
+      });
+      rec.collisionRoot.add(cgltf.scene);
+    } catch (err) {
+      console.warn(`failed to load ${entry.collisionGlb}`, err);
+    }
+  }
+  applyCollisionView(rec);
+
   publish(rec);
   return rec;
 }
@@ -4840,6 +4875,47 @@ function toggleBoxes() {
 }
 
 document.getElementById('m-boxes').onclick = toggleBoxes;
+
+function applyCollisionView(rec) {
+  if (!rec || !rec.group) return;
+  if (rec.collisionRoot) rec.collisionRoot.visible = collisionOn;
+  rec.group.traverse((child) => {
+    if (!child.isMesh || child.userData.collisionOverlay) return;
+    const mats = Array.isArray(child.material) ? child.material : [child.material];
+    for (const mat of mats) {
+      if (!mat) continue;
+      if (mat.userData._collisionBaseOpacity == null) {
+        mat.userData._collisionBaseOpacity = mat.opacity ?? 1;
+        mat.userData._collisionBaseTransparent = !!mat.transparent;
+      }
+      if (collisionOn) {
+        mat.transparent = true;
+        mat.opacity = 0.18;
+        mat.depthWrite = false;
+      } else {
+        mat.transparent = mat.userData._collisionBaseTransparent;
+        mat.opacity = mat.userData._collisionBaseOpacity;
+        mat.depthWrite = !mat.transparent;
+      }
+    }
+  });
+}
+
+function setCollisionVisible(on) {
+  collisionOn = on;
+  const btn = document.getElementById('m-collision');
+  if (btn) btn.classList.toggle('on', collisionOn);
+  for (const rec of objects.values()) applyCollisionView(rec);
+}
+
+function toggleCollision() {
+  setCollisionVisible(!collisionOn);
+  setStatus(collisionOn
+    ? 'Collision meshes shown (orange). Visual dimmed so the hulls are visible.'
+    : 'Collision overlay hidden.');
+}
+
+document.getElementById('m-collision').onclick = toggleCollision;
 
 /**
  * Stand the selection up without turning it around: roll and pitch go, yaw

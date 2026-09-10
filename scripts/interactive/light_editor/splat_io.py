@@ -798,6 +798,7 @@ def build_splat_proxy(usd_path, out_dir, name, *, budget=DEFAULT_SPLAT_BUDGET,
 
     return {
         "glb": None,
+        "collisionGlb": None,
         "splat": name,
         "splatCount": gaussians["kept"],
         "splatTotal": gaussians["total"],
