@@ -7,7 +7,10 @@ import numpy as np
 import pytest
 import trimesh
 
-from simfoundry.utils.asset_conversion_utils import generate_collision_meshes
+from simfoundry.utils.asset_conversion_utils import (
+    generate_collision_meshes,
+    resolve_collision_method,
+)
 
 
 def _open_box_surface(size=(0.30, 0.20, 0.15)):
@@ -46,6 +49,15 @@ def test_convex_collision_fills_open_box():
     assert len(hulls) == 1
     assert hulls[0].is_volume
     assert hulls[0].volume == pytest.approx(visual.convex_hull.volume, rel=0.05)
+
+
+def test_auto_collision_keeps_box_visual_and_bottle_convex():
+    assert resolve_collision_method("auto", "open_cardboard_box") == "visual"
+    assert resolve_collision_method("auto", "clear_water_bottle") == "convex"
+    assert resolve_collision_method("visual", "clear_water_bottle") == "visual"
+    assert resolve_collision_method(
+        "auto", "clear_water_bottle", overrides={"clear_water_bottle": "visual"}
+    ) == "visual"
 
 
 def test_visual_method_rejects_unknown():

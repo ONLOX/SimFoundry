@@ -143,9 +143,12 @@ def main(cfg):
 
         approximation = cfg.s13_usd.get("collision_approximation", "auto")
         if approximation == "auto":
-            # Visual-mesh colliders must not be re-hulled; CoACD pieces already are hulls.
-            s11_method = cfg.s11_sim.get("collision_method", "coacd")
-            approximation = "sdf" if s11_method == "visual" else None
+            # Per-object: visual colliders must not be re-hulled (keeps a cavity).
+            # Convex / CoACD pieces are already hulls; leave the importer's convexHull.
+            obj_method = obj_info.get("collision_method") or cfg.s11_sim.get(
+                "collision_method", "auto"
+            )
+            approximation = "sdf" if obj_method == "visual" else None
         if approximation:
             if os.path.exists(usd_path):
                 logger.info(f"Setting collision approximation for {obj_name}: {approximation}")

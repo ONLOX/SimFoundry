@@ -637,6 +637,42 @@ def simplify_convex_hull(tm, max_vertices=60, max_faces=128):
     ).convex_hull
 
 
+# Category substrings that should keep a cavity (visual + SDF), not a convex fill.
+CONTAINER_CATEGORY_HINTS = (
+    "box", "bowl", "cup", "basket", "carton", "crate", "bin",
+    "drawer", "pot", "mug", "container", "bucket", "tray",
+)
+
+
+def resolve_collision_method(method, category="", overrides=None):
+    """Pick a concrete collision method for one object.
+
+    TRELLIS visuals are cracked hollow shells for both a water bottle and an
+    open box. A convex hull is the right collider for the bottle (treat it as
+    solid so it stands) and the wrong one for the box (it fills the cavity).
+    That split is semantic, so ``auto`` uses category-name hints plus explicit
+    overrides rather than mesh topology.
+
+    Args:
+        method (str): ``auto``, ``visual``, ``convex``, ``coacd``, or ``none``.
+        category (str): Object category, e.g. ``open_cardboard_box``.
+        overrides (dict or None): Category → method. Keys may be raw or sanitized.
+
+    Returns:
+        str: A concrete method, never ``auto``.
+    """
+    overrides = overrides or {}
+    sanitized = (category or "").lower().replace(" ", "_").replace("-", "_")
+    for key in (category, sanitized):
+        if key and key in overrides:
+            return overrides[key]
+    if method != "auto":
+        return method
+    if any(hint in sanitized for hint in CONTAINER_CATEGORY_HINTS):
+        return "visual"
+    return "convex"
+
+
 def _decimate_collision_mesh(tm, max_faces=4000):
     """Reduce a render mesh so PhysX SDF / triangle collision stays cheap.
 

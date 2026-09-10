@@ -12,7 +12,11 @@ import numpy as np
 import os
 from pathlib import Path
 import json
-from simfoundry.utils.asset_conversion_utils import import_custom_object, import_articulated_object
+from simfoundry.utils.asset_conversion_utils import (
+    import_articulated_object,
+    import_custom_object,
+    resolve_collision_method,
+)
 from simfoundry.models.vlm import Gemini
 import hydra
 import trimesh
@@ -230,7 +234,11 @@ def import_rigid_scene_object(
         mass, friction = result_json["mass"], result_json["friction"]
         physics_source = "vlm"
 
-    rigid_collision_method = cfg.s11_sim.get("collision_method", "coacd")
+    rigid_collision_method = resolve_collision_method(
+        cfg.s11_sim.get("collision_method", "auto"),
+        category=obj_category,
+        overrides=cfg.s11_sim.get("collision_method_overrides"),
+    )
     import_custom_object(
         asset_path=mesh_path,
         category=obj_category,
@@ -254,6 +262,7 @@ def import_rigid_scene_object(
         "name": img_name,
         "friction": friction,
         "physics_source": physics_source,
+        "collision_method": rigid_collision_method,
     }
 
 
@@ -482,7 +491,11 @@ def main(cfg):
                 model=obj_model,
                 dataset_root=out_dir,
                 scale=tf_scale,
-                collision_method=cfg.s11_sim.get("collision_method", "coacd"),
+                collision_method=resolve_collision_method(
+                    cfg.s11_sim.get("collision_method", "auto"),
+                    category=obj_category,
+                    overrides=cfg.s11_sim.get("collision_method_overrides"),
+                ),
                 hull_count=cfg.s11_sim.hull_count,
                 collision_max_faces=cfg.s11_sim.get("collision_max_faces", 4000),
                 # up_axis="z" is default - no rotation needed since mobility.urdf already works correctly
@@ -502,6 +515,11 @@ def main(cfg):
                 "is_articulated": True,
                 "parts_properties": parts_properties,
                 "physics_source": physics_source,
+                "collision_method": resolve_collision_method(
+                    cfg.s11_sim.get("collision_method", "auto"),
+                    category=obj_category,
+                    overrides=cfg.s11_sim.get("collision_method_overrides"),
+                ),
             }
 
 
