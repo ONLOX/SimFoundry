@@ -14,8 +14,12 @@ single rigid prim pose at OG load time preserves the trained state bit-for-bit.
 
 The composite transform is:
 
-    Same-scene (default):
-        M_splat→og = step4_to_og @ image_<N>_cam2world @ ext_src[N]
+    Same-scene (default ``single``):
+        Fit Sim(3) void-DA3 → orig-DA3 on camera centres (``with_scale=True``),
+        then:
+            M_splat→og = step4_to_og @ image_<N>_cam2world @ ext_orig[N] @ Sim3
+        Falls back to the old SE(3) (scale=1, void anchor only) if the two
+        NPZs cannot be paired or the fit is unstable.
 
     Cross-scene (--bridge-mode umeyama):
         Fit Sim(3) from source-DA3 to target-DA3 camera centers over the
@@ -34,7 +38,7 @@ Inputs:
                  sidecar elsewhere.
   --src-npz      DA3 NPZ that the splat was trained against (defines that
                  DA3 world). Defaults to the void-DA3 NPZ used by step 5.
-  --bridge-mode  single (same-scene; default) | umeyama (cross-scene) | auto
+  --bridge-mode  single (same-scene Sim(3); default) | umeyama (cross-scene) | auto
   --target-scene-name  scene whose s4_frame defines OG world (default: --scene-name)
 
 Outputs:
@@ -60,6 +64,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from simfoundry.pipeline.stage_utils import bootstrap_hydra_workdir
+from simfoundry.reconstruction.bg_bridge import same_scene_src_to_og, se3_src_to_og
 from simfoundry.utils.transform_utils import camera_centers_from_world2cam, umeyama_alignment
 
 # cd to scripts/cfg so the cfg's `${root_dir}` (= ../../Data) resolves to repo/Data,
@@ -128,7 +133,8 @@ def main(cfg):
         mode = "single" if scene == target_scene else "umeyama"
     logger.info("Bridge mode: %s", mode)
 
-    scale = 1.0   # Sim(3) scale written to the pose sidecar for OG to apply (1.0 unless cross-scene umeyama)
+    scale = 1.0   # overwritten by Sim(3); stays 1.0 on SE(3) fallback
+    alignment_info = {"alignment": "se3", "reason": None}
 
     if mode == "single":
         if sec.anchor_row is not None:
@@ -139,13 +145,46 @@ def main(cfg):
             sys.exit("Cross-scene + bridge-mode=single: --anchor-row is required.")
         if anchor_row >= ext_src.shape[0]:
             sys.exit(f"anchor_row={anchor_row} out of range for {ext_src.shape[0]} extrinsics")
-        logger.info("Splat anchor row in %s/s2_da extrinsics: %d", scene, anchor_row)
+        logger.info("Splat anchor row in %s extrinsics: %d", scene, anchor_row)
 
-        # ext is w2c: maps DA3 world -> cam-N frame. NO inverse.
-        P_anchor_w2c = np.eye(4, dtype=np.float64)
-        P_anchor_w2c[:3, :4] = ext_src[anchor_row]
-        M_src_to_step4 = image_c2w @ P_anchor_w2c
-        M_src_to_og = step4_to_og @ M_src_to_step4
+        orig_npz = Path(sec.orig_npz).resolve() if sec.orig_npz else \
+                   REPO_ROOT / "Data" / scene / "s2_da" / "da" / "exports" / "npz" / "results.npz"
+        if orig_npz.is_file() and scene == target_scene:
+            ext_orig = np.load(orig_npz)["extrinsics"].astype(np.float64)
+            logger.info("Orig DA3 NPZ (object metres): %s", orig_npz)
+            M_src_to_og, scale, alignment_info = same_scene_src_to_og(
+                ext_void=ext_src,
+                ext_orig=ext_orig,
+                image_c2w=image_c2w,
+                step4_to_og=step4_to_og,
+                anchor_row=anchor_row,
+                scale_min=float(sec.sim3_scale_min),
+                scale_max=float(sec.sim3_scale_max),
+                max_residual_m=float(sec.sim3_max_residual_m),
+            )
+            if alignment_info["alignment"] == "sim3":
+                logger.info(
+                    "Same-scene Sim(3) void→orig: scale=%.4f, mean res=%.4f m, max res=%.4f m",
+                    alignment_info["scale"],
+                    alignment_info["residual_mean_m"],
+                    alignment_info["residual_max_m"],
+                )
+                if alignment_info.get("scale_warning"):
+                    logger.warning("%s", alignment_info["scale_warning"])
+            else:
+                logger.warning(
+                    "Same-scene Sim(3) rejected (%s); using SE(3) scale=1.",
+                    alignment_info.get("reason"),
+                )
+        else:
+            if scene == target_scene:
+                logger.warning("Orig DA3 NPZ missing (%s); using SE(3) scale=1.", orig_npz)
+            M_src_to_og = se3_src_to_og(
+                ext_src_anchor=ext_src[anchor_row],
+                image_c2w=image_c2w,
+                step4_to_og=step4_to_og,
+            )
+            alignment_info = {"alignment": "se3_fallback", "reason": "orig DA3 unavailable"}
 
     elif mode == "umeyama":
         # Fit Sim(3) from source DA3 -> target DA3 over the common src frames.
@@ -174,6 +213,13 @@ def main(cfg):
         res = np.linalg.norm(pred - P_tgt, axis=1)
         logger.info("Umeyama Sim(3) %s_DA3 -> %s_DA3: scale=%.4f, mean res=%.4f m, max res=%.4f m",
                     scene, target_scene, scale, res.mean(), res.max())
+        alignment_info = {
+            "alignment": "sim3",
+            "reason": None,
+            "scale": float(scale),
+            "residual_mean_m": float(res.mean()),
+            "residual_max_m": float(res.max()),
+        }
 
         # Compose: source_DA3 -> target_DA3 -> target_cam_anchor -> step4 -> OG.
         # target's cam_anchor reached by w2c: ext_tgt[target_idx] @ p_target_DA3.
@@ -233,8 +279,17 @@ def main(cfg):
             "target": f"{target_scene} OG world",
         },
         "bridge_mode": mode,
+        "alignment": alignment_info.get("alignment"),
+        "umeyama_scale": float(alignment_info.get("scale", scale)),
         "M_src_to_og": M_src_to_og.tolist(),
     }
+    if alignment_info.get("reason"):
+        sidecar_payload["alignment_reason"] = alignment_info["reason"]
+    if "residual_mean_m" in alignment_info:
+        sidecar_payload["umeyama_residual_mean_m"] = alignment_info["residual_mean_m"]
+        sidecar_payload["umeyama_residual_max_m"] = alignment_info["residual_max_m"]
+    if alignment_info.get("scale_warning"):
+        sidecar_payload["scale_warning"] = alignment_info["scale_warning"]
     sidecar.write_text(json.dumps(sidecar_payload, indent=2))
     logger.info(
         "Wrote pose sidecar -> %s  pos=%s  ori_xyzw=%s  scale=%.6f",

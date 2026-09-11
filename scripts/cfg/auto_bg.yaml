@@ -195,12 +195,16 @@ s5_train_bg_splat:                                # env: simfoundry — train_bg
 
 s6_bridge:                                        # env: simfoundry — bridge_bg_splat_to_og.py
   rerun: true
-  bridge_mode: single                             # options: auto, single (rigid, same-scene), umeyama (Sim(3), cross-scene)
+  bridge_mode: single                             # options: auto, single (same-scene Sim(3) void→orig), umeyama (cross-scene)
   target_scene_name: null                         # null -> same as scene_name; set for cross-scene bridging
   anchor_row: null                                # null -> parse from s4_frame's image_<N>_cam2world.npy
   in_ply: "${auto_bg_dir}/splat/export/${scene_name}_bg.ply"
   out_ply: "${s6_bridge.in_ply}"                  # Same path -> writes only the .pose.json sidecar, no PLY byte-copy
   src_npz: "${void_da3.out_npz}"                   # splat is trained in void-DA3; objects still use orig→OG via cam2world
+  orig_npz: "${orig_da3_npz}"                      # object-metre DA3; same-scene Sim(3) target
+  sim3_scale_min: 0.5                             # reject only insane void→orig scales; residual is the real gate
+  sim3_scale_max: 2.0
+  sim3_max_residual_m: 0.08                       # camera-centre residual after Sim(3); above this, SE(3)
 
 s7_build_assets:                                  # env: simfoundry — build_og_scene_assets.py
   rerun: true

@@ -3,8 +3,10 @@
 This workflow runs reconstruction on a high-memory H20 host and transfers one
 self-contained `.tar.gz` to a 4090 host for OmniGibson import and policy work.
 The archive contains reconstructed object assets, settled poses, and optionally
-the Gaussian-splat background. It never contains a robot or a shared
-BEHAVIOR-1K asset library.
+the Gaussian-splat background. When stage 4 has run, it also includes
+`s4_frame/anchor_camera.json` (OpenCV `K` plus cam2world in the same Z-up
+world as the object poses) so a training importer can spawn a camera without
+re-reading DA3. It never contains a robot or a shared BEHAVIOR-1K asset library.
 
 ## H20: reconstruct and export
 

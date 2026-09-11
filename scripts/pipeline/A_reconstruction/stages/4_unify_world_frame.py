@@ -24,6 +24,7 @@ from pathlib import Path
 import hydra
 from simfoundry.utils.processing_utils import compute_point_cloud_from_depth
 from simfoundry.pipeline.stage_utils import StageResult, bootstrap_hydra_workdir, finalize_stage
+from simfoundry.reconstruction.anchor_camera import build_anchor_camera, write_anchor_camera
 from simfoundry.pipeline.frame_selection import resolve_img_idx
 import logging
 logger = logging.getLogger(__name__)
@@ -118,6 +119,16 @@ def main(cfg):
     cam2world_tf = rot_tf @ trans_tf
     cam2world_tf_fpath = f"{out_dir}/image_{img_idx}_cam2world.npy"
     np.save(cam2world_tf_fpath, cam2world_tf)
+    write_anchor_camera(
+        out_dir,
+        build_anchor_camera(
+            frame_index=img_idx,
+            K=K,
+            width=int(rgb.shape[1]),
+            height=int(rgb.shape[0]),
+            cam2world=cam2world_tf,
+        ),
+    )
 
     finalize_stage(
         stage_cfg=cfg.s4_frame,

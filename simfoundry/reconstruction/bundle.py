@@ -19,6 +19,10 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from simfoundry import REPO_DIR
+from simfoundry.reconstruction.anchor_camera import (
+    ANCHOR_CAMERA_RELPATH,
+    ensure_anchor_camera,
+)
 
 
 SCHEMA = "simfoundry.reconstruction.bundle.v1"
@@ -94,6 +98,15 @@ def _bundle_sources(scene_dir: Path, include_background: bool) -> list[tuple[Pat
         )
     if include_background:
         paths.extend((bg_usdz, bg_pose))
+
+    anchor_camera = scene_dir / ANCHOR_CAMERA_RELPATH
+    if not anchor_camera.is_file():
+        try:
+            anchor_camera = ensure_anchor_camera(scene_dir)
+        except (FileNotFoundError, OSError, ValueError, IndexError, KeyError):
+            anchor_camera = None
+    if anchor_camera is not None and Path(anchor_camera).is_file():
+        paths.append(Path(anchor_camera))
 
     seen = set()
     sources = []
